@@ -1,81 +1,27 @@
 [project]
 name = "open-ptc-agent"
 version = "0.1.0"
-description = "Open source implementation of Programmatic Tool Calling (PTC) with MCP, powered by LangGraph and Daytona"
+description = "Open PTC Agent Monorepo - Programmatic Tool Calling with MCP"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
-    "daytona-sdk>=0.0.1",
-    "mcp>=1.0.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "structlog>=24.0.0",
-    "jinja2>=3.1.0",
-    "aiohttp>=3.9.0",
-    "aiofiles>=23.0.0",
-    "Pillow>=9.0.0",
-    "langchain-openai>=1.0.2",
-    "langchain-anthropic>=1.0.3",
-    "langchain_tavily>=0.2.13",
-    "rich>=14.0.0",
-    "jupyter>=1.0.0",
-    "ipykernel>=6.20.0",
-    "tavily-python>=0.5.0",
-    "httpx>=0.28.1",
-    "markdownify>=1.2.0",
-    "deepagents>=0.2.6",
-    "langgraph-cli[inmem]>=0.4.7",
-    "alibabacloud-oss-v2>=1.2.1",
-    "langchain-google-genai>=1.0.0",
-    "tavily>=1.1.0",
-    "yfinance>=0.2.40",
-    "boto3>=1.41.3",
-    "langchain-qwq>=0.3.1",
-    "langchain-deepseek>=1.0.1",
+    "ipykernel>=7.1.0",
+    "ptc-agent",
+    "ptc-cli",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=23.0.0",
-    "ruff>=0.1.0",
-    "mypy>=1.5.0",
-]
+[tool.uv.workspace]
+members = ["libs/*"]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/ptc_core"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
-ignore = []
-
-[tool.black]
-line-length = 100
-target-version = ["py310"]
-
-[tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
+[tool.uv.sources]
+ptc-agent = { workspace = true }
+ptc-cli = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "mypy>=1.18.2",
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
+    "ruff>=0.14.6",
 ]

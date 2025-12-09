@@ -22,7 +22,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from ptc_agent.config import ConfigContext, load_core_from_files
 from ptc_agent.core.session import SessionManager
 
-
 # =============================================================================
 # Mock MCP Server Script
 # =============================================================================

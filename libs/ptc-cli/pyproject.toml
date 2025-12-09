@@ -78,6 +78,7 @@ ignore-var-parameters = true
 "tests/**" = [
     "D1",      # Skip documentation rules in tests
     "S101",    # Allow asserts in tests
+    "S108",    # Allow /tmp usage in tests (sandbox paths)
     "S311",    # Allow pseudo-random generators in tests
     "ANN",     # Skip all annotation rules in tests
     "ARG",     # Unused arguments (common in fixtures/mocks)

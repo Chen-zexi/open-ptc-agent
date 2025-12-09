@@ -362,7 +362,7 @@ async def simple_cli(
                 current_agent,
                 token_tracker,
                 session_state,
-                session=session,  # type: ignore[arg-type]
+                session=session,
                 model_switch_context=model_switch_context,
             )
             if result == "exit":
