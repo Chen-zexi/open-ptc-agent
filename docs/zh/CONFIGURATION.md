@@ -15,6 +15,25 @@
 
 密钥单独存储在 `.env` 中（参见 `.env.example`）。
 
+### 配置文件搜索路径
+
+配置文件按以下顺序搜索（首个找到的生效）：
+
+**SDK/库使用：**
+1. 当前工作目录
+2. Git 仓库根目录
+3. `~/.ptc-agent/`
+
+**CLI（`ptc-agent` 命令）：**
+1. `~/.ptc-agent/`（用户配置优先）
+2. 当前工作目录
+
+**环境变量覆盖：**
+```bash
+PTC_CONFIG_FILE=/path/to/config.yaml  # 覆盖 config.yaml 路径
+PTC_LLMS_FILE=/path/to/llms.json      # 覆盖 llms.json 路径
+```
+
 ---
 
 ## config.yaml
@@ -27,16 +46,25 @@ llm:
   name: "claude-sonnet-4-5"
 ```
 
+**内联定义**（llms.json 的替代方案）：
+
+```yaml
+llm:
+  name: "claude-haiku-4-5"
+  model_id: "claude-haiku-4-5-20251107"
+  provider: "anthropic"
+  sdk: "langchain_anthropic.ChatAnthropic"
+  api_key_env: "ANTHROPIC_API_KEY"
+```
+
 可用选项取决于 `llms.json` 中定义的内容。预配置模型：
 
-**海外提供商：**
 - `claude-sonnet-4-5`、`claude-opus-4-5` - Anthropic Claude
 - `gpt-5.1-codex`、`gpt-5.1-codex-mini` - OpenAI GPT
 - `gemini-3-pro`、`gemini-3-pro-image` - Google Gemini
-
-**国内提供商：**
 - `glm-4.6` - 智谱 GLM
-- `minimax-m2-stable` - Minimax M2
+- `minimax-m2-stable` - Minimax
+- `deepseek-v3.2` - DeepSeek
 - `doubao-seed-code` - 火山引擎/字节跳动 豆包
 - `qwen3-max` - 阿里云 通义千问
 - `kimi-k2-thinking` - 月之暗面 Kimi
@@ -158,6 +186,30 @@ mcp:
     MY_API_KEY: "${MY_API_KEY}"
 ```
 
+**本地 MCP 服务器的路径解析**：
+
+MCP 服务器配置中的相对路径按以下顺序解析：
+1. 相对于配置文件目录（如 `~/.ptc-agent/`）
+2. 相对于当前工作目录（回退）
+
+这允许您将 MCP 服务器文件放在配置旁边：
+```
+~/.ptc-agent/
+├── config.yaml
+└── mcp_servers/
+    └── my_server.py
+```
+
+配置示例：
+```yaml
+args: ["run", "python", "mcp_servers/my_server.py"]  # 相对于 ~/.ptc-agent/ 解析
+```
+
+也支持绝对路径：
+```yaml
+args: ["run", "python", "/path/to/my_server.py"]
+```
+
 ---
 
 ### 文件系统
@@ -234,12 +286,58 @@ agent:
   # true：自定义工具（Read、Write、Edit、Glob、Grep）具有更多选项
   # false：DeepAgent 的原生中间件工具
   use_custom_filesystem_tools: true
+
+  # 启用 ViewImageMiddleware 以支持多模态 LLM 图像分析
+  enable_view_image: true
 ```
 
 自定义工具提供：
 - 带有 output_mode、multiline、context lines、文件类型过滤的 Grep
-- 优化后的glob 模式
+- 优化后的 glob 模式
 - 带行号的文件读取
+
+---
+
+### 子 Agent
+
+```yaml
+subagents:
+  enabled:
+    - "general-purpose"  # 完整的 execute_code、文件系统、视觉工具
+    - "research"         # 网络搜索（Tavily）+ think 工具
+```
+
+可用的子 Agent：
+- `general-purpose` - 具有代码执行和文件访问能力的复杂多步骤任务
+- `research` - 具有战略性反思的网络研究
+
+子 Agent 默认在后台运行，允许主 Agent 继续工作。
+
+---
+
+### CLI（仅限 ptc-agent）
+
+```yaml
+cli:
+  theme: "auto"       # auto、dark、light
+  palette: "nord"     # 配色方案
+```
+
+**主题选项：**
+- `auto` - 从终端检测（默认）
+- `dark` - 强制深色模式
+- `light` - 强制浅色模式
+
+**配色方案选项：**
+- `emerald`、`cyan`、`amber`、`teal` - 强调色
+- `nord`、`gruvbox`、`catppuccin`、`tokyo_night` - 完整主题
+
+**环境变量覆盖：**
+```bash
+PTC_THEME=dark        # 覆盖主题
+PTC_PALETTE=gruvbox   # 覆盖配色方案
+NO_COLOR=1            # 禁用所有颜色
+```
 
 ---
 

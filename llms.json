@@ -59,12 +59,19 @@
       "base_url": "https://api.z.ai/api/paas/v4/",
       "api_key_env": "ZAI_API_KEY"
     },
-    "minimax-m2-stable": {
-      "model_id": "minimax-m2-stable",
+    "minimax-m2": {
+      "model_id": "minimax-m2",
       "provider": "Minimax",
       "sdk": "langchain_anthropic.ChatAnthropic",
       "base_url": "https://api.minimax.io/anthropic",
       "api_key_env": "MINIMAX_API_KEY"
+    },
+    "deepseek-v3.2": {
+      "model_id": "deepseek-reasoner",
+      "provider": "deepseek",
+      "sdk": "langchain_anthropic.ChatAnthropic",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "api_key_env": "DEEPSEEK_API_KEY"
     },
     "doubao-seed-code": {
       "model_id": "doubao-seed-code-preview-251028",

@@ -4,6 +4,23 @@ All notable changes to Open PTC Agent are documented here.
 
 Repository: https://github.com/Chen-zexi/open-ptc-agent
 
+## [Dec 8-9, 2025]
+
+### Breaking Changes
+- Restructured codebase from `src/` to `libs/` with separate `ptc-agent/` and `ptc-cli/` packages ([f59e890](https://github.com/Chen-zexi/open-ptc-agent/commit/f59e890))
+
+### Added
+- Interactive CLI (`ptc-agent` command) with session persistence, plan mode, themes, and rich UI ([57ebb4d](https://github.com/Chen-zexi/open-ptc-agent/commit/57ebb4d))
+- Context modes, LLM override, and path resolution in config ([fe78fd9](https://github.com/Chen-zexi/open-ptc-agent/commit/fe78fd9))
+- Unit and integration tests for ptc-cli ([2f8726d](https://github.com/Chen-zexi/open-ptc-agent/commit/2f8726d))
+
+### Changed
+- Reorganized root level test suite into `libs/ptc-agent` structure ([e2ff1c8](https://github.com/Chen-zexi/open-ptc-agent/commit/e2ff1c8))
+- Aligned code formatting and typing with ruff and mypy ([a890d9a](https://github.com/Chen-zexi/open-ptc-agent/commit/a890d9a))
+
+### Fixed
+- Message ordering for plan-mode and submit_plan approval/rejection flow ([657e83e](https://github.com/Chen-zexi/open-ptc-agent/commit/657e83e))
+
 ## [Dec 1-7, 2025]
 
 ### Added

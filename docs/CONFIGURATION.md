@@ -15,6 +15,25 @@ The project uses two main configuration files:
 
 Credentials are stored separately in `.env` (see `.env.example`).
 
+### Config File Search Paths
+
+Configuration files are searched in order (first found wins):
+
+**SDK/Library usage:**
+1. Current working directory
+2. Git repository root
+3. `~/.ptc-agent/`
+
+**CLI (`ptc-agent` command):**
+1. `~/.ptc-agent/` (user config takes precedence)
+2. Current working directory
+
+**Environment Variable Overrides:**
+```bash
+PTC_CONFIG_FILE=/path/to/config.yaml  # Override config.yaml path
+PTC_LLMS_FILE=/path/to/llms.json      # Override llms.json path
+```
+
 ---
 
 ## config.yaml
@@ -27,13 +46,25 @@ llm:
   name: "claude-sonnet-4-5"
 ```
 
+**Inline Definition** (alternative to llms.json):
+
+```yaml
+llm:
+  name: "claude-haiku-4-5"
+  model_id: "claude-haiku-4-5-20251107"
+  provider: "anthropic"
+  sdk: "langchain_anthropic.ChatAnthropic"
+  api_key_env: "ANTHROPIC_API_KEY"
+```
+
 Available options depend on what's defined in `llms.json`. Pre-configured models:
 
 - `claude-sonnet-4-5`, `claude-opus-4-5` - Anthropic Claude
 - `gpt-5.1-codex`, `gpt-5.1-codex-mini` - OpenAI GPT
 - `gemini-3-pro`, `gemini-3-pro-image` - Google Gemini
 - `glm-4.6` - Z.AI/Zhipu GLM
-- `minimax-m2-stable` - Minimax M2
+- `minimax-m2-stable` - Minimax
+- `deepseek-v3.2` - DeepSeek
 - `doubao-seed-code` - Volcengine/ByteDance Doubao
 - `qwen3-max` - Dashscope/Alibaba Qwen
 - `kimi-k2-thinking` - Moonshot Kimi
@@ -155,6 +186,30 @@ mcp:
     MY_API_KEY: "${MY_API_KEY}"
 ```
 
+**Path Resolution for Local MCP Servers**:
+
+Relative paths in MCP server configurations are resolved in the following order:
+1. Relative to the config file directory (e.g., `~/.ptc-agent/`)
+2. Relative to the current working directory (fallback)
+
+This allows you to place MCP server files alongside your config:
+```
+~/.ptc-agent/
+├── config.yaml
+└── mcp_servers/
+    └── my_server.py
+```
+
+With config:
+```yaml
+args: ["run", "python", "mcp_servers/my_server.py"]  # Resolved relative to ~/.ptc-agent/
+```
+
+Absolute paths are also supported and used as-is:
+```yaml
+args: ["run", "python", "/path/to/my_server.py"]
+```
+
 ---
 
 ### Filesystem
@@ -231,12 +286,58 @@ agent:
   # true: Custom tools (Read, Write, Edit, Glob, Grep) with more options
   # false: DeepAgent's native middleware tools
   use_custom_filesystem_tools: true
+
+  # Enable ViewImageMiddleware for multimodal LLM image analysis
+  enable_view_image: true
 ```
 
 Custom tools provide:
 - Grep with output_mode, multiline, context lines, file type filtering
 - Advanced glob patterns
 - Line-numbered file reading
+
+---
+
+### Subagents
+
+```yaml
+subagents:
+  enabled:
+    - "general-purpose"  # Full execute_code, filesystem, vision tools
+    - "research"         # Web search (Tavily) + think tool
+```
+
+Available subagents:
+- `general-purpose` - Complex multi-step tasks with code execution and file access
+- `research` - Web research with strategic reflection
+
+Subagents run in the background by default, allowing the main agent to continue working.
+
+---
+
+### CLI (ptc-agent only)
+
+```yaml
+cli:
+  theme: "auto"       # auto, dark, light
+  palette: "nord"     # Color scheme
+```
+
+**Theme Options:**
+- `auto` - Detect from terminal (default)
+- `dark` - Force dark mode
+- `light` - Force light mode
+
+**Palette Options:**
+- `emerald`, `cyan`, `amber`, `teal` - Accent colors
+- `nord`, `gruvbox`, `catppuccin`, `tokyo_night` - Full themes
+
+**Environment Variable Overrides:**
+```bash
+PTC_THEME=dark        # Override theme
+PTC_PALETTE=gruvbox   # Override palette
+NO_COLOR=1            # Disable all colors
+```
 
 ---
 

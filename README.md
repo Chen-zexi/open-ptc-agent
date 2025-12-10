@@ -1,12 +1,17 @@
 # Open PTC Agent
 
-[English](README.md) | [中文](README_zh.md)
+[English](README.md) | [中文](docs/zh/README.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![LangChain](https://img.shields.io/badge/LangChain-1c3c3c?logo=langchain&logoColor=white)](https://github.com/langchain-ai/langchain)
 [![GitHub stars](https://img.shields.io/github/stars/Chen-zexi/open-ptc-agent?style=social)](https://github.com/Chen-zexi/open-ptc-agent/stargazers)
 
-[Getting Started](#getting-started) | [Demo Notebooks](#demo-notebooks) | [Configuration](docs/CONFIGURATION.md) | [Changelog](docs/CHANGELOG.md) | [Roadmap](#roadmap)
+[Getting Started](#getting-started) | [CLI Reference](#cli-reference) | [Configuration](docs/CONFIGURATION.md) | [Changelog](docs/CHANGELOG.md) | [Roadmap](#roadmap)
+
+<video src="docs/assets/PTC-CLI-DEMO.mp4" controls width="800"></video>
+
+*Demo: Analyzing 2 years of NVDA, AMD & SPY stock data (15,000+ lines of raw JSON) using DeepSeek V3.2*
 
 ## What is Programmatic Tool Calling?
 
@@ -21,7 +26,6 @@ This project is an open source implementation of Anthropic recently introduced [
 3. PTC particularly shines when working with large volumes of structured data, time series data (like financial market data), and scenarios requiring further data processing - filtering, aggregating, transforming, or visualizing results before returning them to the model.
 
 ## How It Works
-This project is implementing based on [deep-agent](https://github.com/langchain-ai/deepagents) from langchain-ai and [daytona](https://www.daytona.io/) for sandbox environment.
 
 ```
 User Task
@@ -46,18 +50,23 @@ User Task
 +-------------------+
 ```
 
+> **Built on [LangChain DeepAgents](https://github.com/langchain-ai/deepagents)** - This project uses many components from DeepAgents and cli feature was bootstrapped from deepagent-cli. Special thanks to the LangChain team!
+
+> **Sandbox environment provided by [Daytona](https://www.daytona.io/)**.
 ## What's New
 
+- **Interactive CLI** - New `ptc-agent` command for terminal-based interaction with session persistence, plan mode, themes, and rich UI
 - **Background Subagent Execution** - Subagents now run asynchronously using a "fire and collect" pattern, giving the agent proactive control over dispatched tasks. Results are automatically returned to the agent upon completion, even without explicitly calling `wait()`
-- **Vision/Multimodal Support** - New `view_image` tool enables vision-capable LLMs to analyze images from URLs, base64 data, or sandbox files
 - **Task Monitoring** - New `wait()` and `task_progress()` tools for monitoring and collecting background task results
+- **Vision/Multimodal Support** - New `view_image` tool enables vision-capable LLMs to analyze images from URLs, base64 data, or sandbox files
+
 
 ## Features
 
 - **Universal MCP Support** - Auto-converts any MCP server tools to Python functions
 - **Progressive Tool Discovery** - Tools discovered on-demand; avoids large number of tokens of upfront tool definitions
 - **Custom MCP Upload** - Deploy Python MCP implementations directly into sandbox sessions
-- **Enhanced File Tools** - Refined glob, grep and other file operation tools based on LangChain DeepAgent
+- **Enhanced File Tools** - Refined glob, grep and other file operation tools optimized for sandbox environment
 - **Daytona Backend** - Secure code execution with filesystem isolation and snapshot support
 - **Auto Image Upload** - Charts and images auto-uploaded to cloud storage (Cloudflare R2, AWS S3, Alibaba OSS)
 - **LangGraph Ready** - Compatible with LangGraph Cloud/Studio deployment
@@ -66,30 +75,33 @@ User Task
 ## Project Structure
 
 ```
-├── src/
-│   ├── ptc_core/              # Core infrastructure
-│   │   ├── sandbox.py         # PTCSandbox (glob, grep, read, write)
-│   │   ├── mcp_registry.py    # MCP server discovery & connection
-│   │   ├── tool_generator.py  # MCP schema → Python functions
-│   │   ├── session.py         # Session lifecycle management
-│   │   └── config.py          # Configuration classes
+├── libs/
+│   ├── ptc-agent/             # Core agent library
+│   │   └── ptc_agent/
+│   │       ├── core/          # Sandbox, MCP registry, tool generator, session
+│   │       ├── config/        # Configuration classes and loaders
+│   │       ├── agent/         # PTCAgent, tools, prompts, middleware, subagents
+│   │       └── utils/         # Cloud storage uploaders
 │   │
-│   └── agent/                 # Agent implementation
-│       ├── agent.py           # PTCAgent, PTCExecutor
-│       ├── config.py          # AgentConfig
-│       ├── tools/             # Native tool implementations
-│       ├── prompts/           # Jinja2 templates
-│       ├── subagents/         # Research & general-purpose subagents
-│       ├── middleware/        # Background execution, vision support
-│       └── backends/          # DaytonaBackend
+│   └── ptc-cli/               # Interactive CLI application
+│       └── ptc_cli/
+│           ├── core/          # State, config, theming
+│           ├── commands/      # Slash commands, bash execution
+│           ├── display/       # Rich terminal rendering
+│           ├── input/         # Prompt, completers, file mentions
+│           └── streaming/     # Tool approval, execution
 │
-├── mcp_servers/               # Custom MCP server implementations for demo purposes
+├── mcp_servers/               # Demo MCP server implementations
 │   ├── yfinance_mcp_server.py
 │   └── tickertick_mcp_server.py
 │
+├── example/                   # Demo notebooks and scripts
+│   ├── PTC_Agent.ipynb
+│   ├── Subagent_demo.ipynb
+│   └── quickstart.py
+│
 ├── config.yaml                # Main configuration
-├── llms.json                  # LLM provider definitions
-└── PTC_Agent.ipynb            # Demo notebook
+└── llms.json                  # LLM provider definitions
 ```
 
 ## Native Tools
@@ -108,7 +120,7 @@ The agent has access to native tools plus middleware capabilities from [deep-age
 | **Glob** | File pattern matching | `pattern`, `path` |
 | **Grep** | Content search (ripgrep) | `pattern`, `path`, `output_mode` |
 
-### Middleware (via langchain/deep-agent)
+### Middleware
 
 | Middleware | Description | Tools Provided |
 |------------|-------------|----------------|
@@ -119,13 +131,11 @@ The agent has access to native tools plus middleware capabilities from [deep-age
 | **TodoListMiddleware** | Task planning and progress tracking (auto-enabled) | `write_todos` |
 | **SummarizationMiddleware** | Auto-summarizes conversation history (auto-enabled) | - |
 
-**Available Subagents:**
+**Available Subagents (Default):**
 - `research` - Web search with Tavily + think tool for strategic reflection
 - `general-purpose` - Full execute_code, filesystem, and vision tools for complex multi-step tasks
 
 Subagents run in the background by default - the main agent can continue working while delegated tasks execute asynchronously.
-
-Note: For better tool discovery, I override the built-in filesystem middleware from langchain deep-agent. You can disable it by setting `use_custom_filesystem_tools` to false in `config.yaml`.
 
 ## MCP Integration
 
@@ -136,7 +146,7 @@ The demo includes 3 enabled MCP servers configured in `config.yaml`:
 | Server | Transport | Tools | Purpose |
 |--------|-----------|-------|---------|
 | **tavily** | stdio (npx) | 4 | Web search |
-| **yfinance** | stdio (python) | 10 | Stock prices, financials |
+| **yfinance** | stdio (python) | 21 | Stock prices, financials |
 | **tickertick** | stdio (python) | 7 | Financial news |
 
 ### How MCP Tools Appear
@@ -193,6 +203,7 @@ print(summary)
 git clone https://github.com/Chen-zexi/open-ptc-agent.git
 cd open-ptc-agent
 uv sync
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 ### Minimal Configuration
@@ -205,7 +216,8 @@ ANTHROPIC_API_KEY=your-key
 # or
 OPENAI_API_KEY=your-key
 # or
-# Any model you configred in llms.json and config.yaml
+# Any model you configured in llms.json and config.yaml
+# You can also use Coding plans from Minimax and GLM here!
 
 # Daytona (required)
 DAYTONA_API_KEY=your-key
@@ -230,16 +242,29 @@ OSS_ACCESS_KEY_ID=...            # Alibaba OSS
 LANGSMITH_API_KEY=your-key
 ```
 
-See `.env.example` for the complete list of configuration options.
+See `.env.example` for the complete list of environment variables options.
+
+### Run the CLI
+
+Start the interactive CLI:
+
+```bash
+ptc-agent
+```
+
+See the **[ptc-cli documentation](libs/ptc-cli/README.md)** for all commands and options.
+
+For programmatic usage of PTC Agent, see the [ptc-agent documentation](libs/ptc-agent/README.md).
 
 ### Demo Notebooks
 
-Quick start with the jupyter notebooks:
+For Jupyter notebook examples:
 
-- **PTC_Agent.ipynb** - Quick demo with open-ptc-agent
-- **example/Subagent_demo.ipynb** - Background subagent execution with research and general-purpose agents
+- **[PTC_Agent.ipynb](example/PTC_Agent.ipynb)** - Quick demo with open-ptc-agent
+- **[Subagent_demo.ipynb](example/Subagent_demo.ipynb)** - Background subagent execution
+- **[quickstart.py](example/quickstart.py)** - Python script quickstart
 
-Optionally, you can use the langgraph api to deploy the agent.
+Optionally, use the LangGraph API to deploy the agent.
 
 ## Configuration
 
@@ -268,16 +293,35 @@ mcp:
 
 For complete configuration options including Daytona settings, security policies, and adding custom LLM providers, see the [Configuration Guide](docs/CONFIGURATION.md).
 
+## CLI Reference
+
+The `ptc-agent` command provides an interactive terminal interface with:
+- Session persistence and sandbox reuse
+- Slash commands (`/help`, `/files`, `/view`, `/download`)
+- Bash execution with `!command`
+- File mentions with `@path/to/file`
+- Customizable themes and color palettes
+
+Quick start:
+
+```bash
+ptc-agent                    # Start interactive session
+ptc-agent --plan-mode        # Enable plan approval before execution
+ptc-agent list               # List available agents
+```
+
+For complete CLI documentation including all options, commands, keyboard shortcuts, and theming configuration, see the **[CLI Reference](libs/ptc-cli/README.md)**.
+
 ## Roadmap
 
 Planned features and improvements:
 
+- [x] CLI Version for PTC Agent
 - [ ] CI/CD pipeline for automated testing
 - [ ] Additional MCP server integrations / More example notebooks
 - [ ] Performance benchmarks and optimizations
 - [ ] Improved search tool for smoother tool discovery
 - [ ] Claude skill integration
-- [ ] CLI Version for PTC Agent (Release soon)
 
 ## Contributing
 
