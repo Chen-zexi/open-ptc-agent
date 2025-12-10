@@ -9,7 +9,7 @@
 
 [Getting Started](#getting-started) | [CLI Reference](#cli-reference) | [Configuration](docs/CONFIGURATION.md) | [Changelog](docs/CHANGELOG.md) | [Roadmap](#roadmap)
 
-<video src="docs/assets/PTC-CLI-DEMO.mp4" controls width="800"></video>
+<video src="https://github.com/user-attachments/assets/cca8c6ee-0c6f-4a97-ad7d-08bad250c006" controls width="800"></video>
 
 *Demo: Analyzing 2 years of NVDA, AMD & SPY stock data (15,000+ lines of raw JSON) using DeepSeek V3.2*
 

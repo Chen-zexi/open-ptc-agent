@@ -9,7 +9,7 @@
 
 [快速开始](#快速开始) | [CLI 参考](#cli-参考) | [配置指南](CONFIGURATION.md) | [更新日志](../CHANGELOG.md) | [路线图](#路线图)
 
-<video src="../assets/PTC-CLI-DEMO.mp4" controls width="800"></video>
+<video src="https://github.com/user-attachments/assets/cca8c6ee-0c6f-4a97-ad7d-08bad250c006" controls width="800"></video>
 
 *演示：使用 DeepSeek V3.2 分析 2 年的 NVDA、AMD 和 SPY 股票数据（15,000+ 行原始 JSON）*
 
