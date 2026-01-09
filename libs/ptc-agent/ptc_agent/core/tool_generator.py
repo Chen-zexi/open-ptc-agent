@@ -406,7 +406,7 @@ except ImportError:
                 # Stdio transport - use command
                 env_dict = "{}"
                 if hasattr(server, "env") and server.env:
-                    env_items = [f'"{k}": "{v}"' for k, v in server.env.items()]
+                    env_items = [f'"{k}": "{resolve_env_vars(str(v))}"' for k, v in server.env.items()]
                     env_dict = "{" + ", ".join(env_items) + "}"
 
                 # Transform Python MCP servers for sandbox execution
