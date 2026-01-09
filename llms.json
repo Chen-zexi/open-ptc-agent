@@ -52,15 +52,15 @@
       "sdk": "langchain_google_genai.ChatGoogleGenerativeAI",
       "api_key_env": "GEMINI_API_KEY"
     },
-    "glm-4.6": {
-      "model_id": "glm-4.6",
+    "glm-4.7": {
+      "model_id": "glm-4.7",
       "provider": "Z.AI",
-      "sdk": "langchain_deepseek.ChatDeepSeek",
-      "base_url": "https://api.z.ai/api/paas/v4/",
+      "sdk": "langchain_anthropic.ChatAnthropic",
+      "base_url": "https://api.z.ai/api/anthropic",
       "api_key_env": "ZAI_API_KEY"
     },
-    "minimax-m2": {
-      "model_id": "minimax-m2",
+    "minimax-m2.1": {
+      "model_id": "minimax-m2.1",
       "provider": "Minimax",
       "sdk": "langchain_anthropic.ChatAnthropic",
       "base_url": "https://api.minimax.io/anthropic",
