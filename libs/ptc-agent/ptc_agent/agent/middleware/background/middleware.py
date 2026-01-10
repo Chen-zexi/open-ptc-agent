@@ -25,9 +25,7 @@ from ptc_agent.agent.middleware.background.tools import (
 # This ContextVar propagates task_id to subagent tool calls, used by
 # ToolCallCounterMiddleware to track which background task a tool call
 # belongs to.
-current_background_task_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "current_background_task_id", default=None
-)
+current_background_task_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_background_task_id", default=None)
 
 logger = structlog.get_logger(__name__)
 
@@ -49,8 +47,8 @@ def _truncate_description(description: str, max_sentences: int = 2) -> str:
         if period_idx == -1:
             sentences.append(remaining)
             break
-        sentences.append(remaining[:period_idx + 1])
-        remaining = remaining[period_idx + 1:].lstrip()
+        sentences.append(remaining[: period_idx + 1])
+        remaining = remaining[period_idx + 1 :].lstrip()
         if not remaining:
             break
     return " ".join(sentences)
@@ -214,15 +212,11 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             name="task",
         )
 
-    def after_agent(
-        self, state: AgentState, runtime: Any
-    ) -> dict[str, Any] | None:
+    def after_agent(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
         """Sync after_agent - no-op for sync execution."""
         return None
 
-    async def aafter_agent(
-        self, state: AgentState, runtime: Any
-    ) -> dict[str, Any] | None:
+    async def aafter_agent(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
         """Waiting room: collect background results after agent ends.
 
         This hook runs after the agent decides it has no more work to do.
@@ -246,14 +240,21 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             )
             return None
 
-        pending_count = self.registry.pending_count
-        if pending_count == 0:
-            logger.debug("No pending background tasks")
+        # Check for tasks that need result collection (running OR completed-but-unprocessed)
+        # Note: We can't use pending_count here because it returns 0 for tasks that
+        # completed before this hook runs (is_pending checks asyncio_task.done()).
+        # We need to check for any task that hasn't had its result collected yet.
+        has_tasks_to_process = any(task.asyncio_task is not None and not task.completed for task in self.registry._tasks.values())
+
+        if not has_tasks_to_process:
+            logger.debug("No background tasks to process")
             return None
 
+        pending_count = self.registry.pending_count
         logger.info(
-            "Agent ended with pending background tasks, entering waiting room",
-            pending_count=pending_count,
+            "Agent ended with background tasks, entering waiting room",
+            tasks_to_process=sum(1 for task in self.registry._tasks.values() if task.asyncio_task is not None and not task.completed),
+            still_pending=pending_count,
             timeout=self.timeout,
         )
 
@@ -266,10 +267,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         logger.info(
             "Waiting room collected results",
             result_count=len(results),
-            success_count=sum(
-                1 for r in results.values()
-                if isinstance(r, dict) and r.get("success", False)
-            ),
+            success_count=sum(1 for r in results.values() if isinstance(r, dict) and r.get("success", False)),
         )
 
         # Return state update indicating we have pending results

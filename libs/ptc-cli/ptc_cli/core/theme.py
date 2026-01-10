@@ -8,8 +8,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-import darkdetect
 import yaml
+
+try:
+    import darkdetect
+except ModuleNotFoundError:  # pragma: no cover
+    darkdetect = None
 
 
 class ThemeMode(Enum):
@@ -419,11 +423,12 @@ class ThemeManager:
                     pass
 
         # Strategy 2: Use darkdetect for macOS system appearance
-        try:
-            if darkdetect.isDark() is False:
-                return "light"
-        except Exception:  # noqa: BLE001, S110
-            pass
+        if darkdetect is not None:
+            try:
+                if darkdetect.isDark() is False:
+                    return "light"
+            except Exception:  # noqa: BLE001, S110
+                pass
 
         return "dark"
 

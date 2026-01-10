@@ -27,9 +27,11 @@ CTRL_C_EXIT_COUNT = 3  # Number of Ctrl+C presses required to exit
 
 
 def get_bottom_toolbar(
-    session_state: SessionState, session_ref: dict
+    session_state: SessionState,
+    session_ref: dict,
+    agent_ref: dict | None = None,
 ) -> Callable[[], list[tuple[str, str]]]:
-    """Return toolbar function that shows auto-approve status and BASH MODE."""
+    """Return toolbar function that shows auto-approve status, BASH MODE, and subagent count."""
 
     def toolbar() -> list[tuple[str, str]]:
         parts = []
@@ -44,6 +46,20 @@ def get_bottom_toolbar(
                     parts.append(("", " | "))
         except (AttributeError, TypeError):
             # Silently ignore - toolbar is non-critical and called frequently
+            pass
+
+        # Show running subagent count
+        try:
+            if agent_ref:
+                agent = agent_ref.get("agent")
+                if agent and hasattr(agent, "middleware") and hasattr(agent.middleware, "registry"):
+                    count = agent.middleware.registry.pending_count
+                    if count > 0:
+                        label = "subagent" if count == 1 else "subagents"
+                        parts.append(("class:toolbar-cyan", f" {count} {label} running "))
+                        parts.append(("", " | "))
+        except (AttributeError, TypeError):
+            # Silently ignore - toolbar is non-critical
             pass
 
         # Base status message
@@ -90,6 +106,7 @@ def create_prompt_session(
     _assistant_id: str | None,
     session_state: SessionState,
     sandbox_completer: SandboxFileCompleter | None = None,
+    agent_ref: dict | None = None,
 ) -> PromptSession[str]:
     """Create a configured PromptSession with all features.
 
@@ -97,6 +114,7 @@ def create_prompt_session(
         _assistant_id: Agent identifier (unused, for future use)
         session_state: Session state with auto-approve settings
         sandbox_completer: Optional completer for sandbox file paths
+        agent_ref: Optional reference to agent for toolbar status display
 
     Returns:
         Configured PromptSession
@@ -149,10 +167,7 @@ def create_prompt_session(
         app_ref = app
 
         def clear_hint() -> None:
-            if (
-                session_state.exit_hint_until is not None
-                and time.monotonic() >= session_state.exit_hint_until
-            ):
+            if session_state.exit_hint_until is not None and time.monotonic() >= session_state.exit_hint_until:
                 session_state.exit_hint_until = None
                 session_state.exit_hint_handle = None
                 session_state.ctrl_c_count = 0
@@ -250,9 +265,7 @@ def create_prompt_session(
         complete_in_thread=True,  # Async completion prevents menu freezing
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
-        bottom_toolbar=get_bottom_toolbar(
-            session_state, session_ref
-        ),  # Persistent status bar at bottom
+        bottom_toolbar=get_bottom_toolbar(session_state, session_ref, agent_ref),  # Persistent status bar at bottom
         style=toolbar_style,  # Apply toolbar styling
         reserve_space_for_menu=7,  # Reserve space for completion menu to show 5-6 results
     )

@@ -308,13 +308,15 @@ async def simple_cli(
             normalized = [f.removeprefix(home_prefix) for f in files]
             sandbox_completer.set_files(normalized)
 
+    # Create agent reference (used by toolbar and model switching)
+    agent_ref: dict[str, Any] = {"agent": agent}
+
     # Create prompt session and token tracker
-    prompt_session = create_prompt_session(assistant_id, session_state, sandbox_completer)
+    prompt_session = create_prompt_session(assistant_id, session_state, sandbox_completer, agent_ref)
     token_tracker = TokenTracker()
     token_tracker.set_baseline(baseline_tokens)
 
     # Create model switch context for /model command
-    agent_ref: dict[str, Any] = {"agent": agent}
     model_switch_context: ModelSwitchContext | None = None
     if ptc_agent is not None and config is not None:
         model_switch_context = ModelSwitchContext(
@@ -374,6 +376,11 @@ async def simple_cli(
             break
 
         try:
+            # Get background registry from orchestrator for status display
+            bg_registry = None
+            if hasattr(current_agent, "middleware") and hasattr(current_agent.middleware, "registry"):
+                bg_registry = current_agent.middleware.registry
+
             await execute_task(
                 user_input,
                 current_agent,
@@ -382,6 +389,7 @@ async def simple_cli(
                 token_tracker,
                 session=session,
                 sandbox_completer=sandbox_completer,
+                background_registry=bg_registry,
             )
         except Exception as e:
             # Safety net for API errors that weren't caught in execute_task

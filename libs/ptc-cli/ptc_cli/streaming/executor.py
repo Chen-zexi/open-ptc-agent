@@ -153,6 +153,7 @@ async def execute_task(  # noqa: PLR0911
     token_tracker: TokenTracker | None = None,
     session: "Any" = None,  # noqa: ANN401
     sandbox_completer: "Any" = None,  # noqa: ANN401
+    background_registry: "Any" = None,  # noqa: ANN401
     _retry_count: int = 0,
 ) -> None:
     """Execute any task by passing it directly to the AI agent.
@@ -165,6 +166,7 @@ async def execute_task(  # noqa: PLR0911
         token_tracker: Optional token tracker
         session: Optional session for sandbox recovery
         sandbox_completer: Optional completer to refresh file cache after task
+        background_registry: Optional BackgroundTaskRegistry for status display
         _retry_count: Internal retry counter (do not set manually)
     """
     # Parse file mentions and inject content from sandbox
@@ -271,7 +273,42 @@ async def execute_task(  # noqa: PLR0911
                 if not isinstance(chunk, tuple) or len(chunk) != _CHUNK_TUPLE_SIZE:
                     continue
 
-                _namespace, current_stream_mode, data = chunk
+                namespace, current_stream_mode, data = chunk
+
+                # Skip subagent chunks - only display main agent output
+                # Main agent has empty namespace (), subagents have non-empty namespace
+                if namespace:
+                    # Still capture HITL interrupts from subgraphs (safety)
+                    if (
+                        current_stream_mode == "updates"
+                        and HITL_AVAILABLE
+                        and _HITL_REQUEST_ADAPTER
+                        and isinstance(data, dict)
+                        and "__interrupt__" in data
+                    ):
+                        interrupts = data["__interrupt__"]
+                        if interrupts:
+                            for interrupt_obj in interrupts:
+                                try:
+                                    validated = _HITL_REQUEST_ADAPTER.validate_python(interrupt_obj.value)
+                                    pending_interrupts[interrupt_obj.id] = validated
+                                    interrupt_occurred = True
+                                except ValidationError as e:
+                                    logger.warning(
+                                        "Invalid HITL request data",
+                                        error=str(e),
+                                    )
+
+                    # Update spinner to show subagent count
+                    if background_registry:
+                        try:
+                            count = background_registry.pending_count
+                            if count > 0:
+                                label = "subagent" if count == 1 else "subagents"
+                                state.update_spinner(f"[bold {COLORS['thinking']}]{count} {label} running...")
+                        except (AttributeError, TypeError):
+                            pass  # Ignore if registry doesn't have pending_count
+                    continue
 
                 # Handle UPDATES stream - for todos and interrupts
                 if current_stream_mode == "updates":
@@ -372,6 +409,7 @@ async def execute_task(  # noqa: PLR0911
                                             token_tracker,
                                             session,
                                             sandbox_completer,
+                                            background_registry,
                                             _retry_count=1,
                                         )
                                     return None  # Recovery failed, stop
@@ -383,6 +421,42 @@ async def execute_task(  # noqa: PLR0911
                                 console.print()
                                 console.print(truncate_error(tool_content), style="red", markup=False)
                                 console.print()
+                            elif tool_name in ("task", "wait", "task_progress"):
+                                # The task tool returns subagent results via ToolMessage; show them so
+                                # users aren't left waiting if the agent doesn't echo/summarize.
+                                state.flush_text(final=True)
+                                if state.spinner_active:
+                                    state.stop_spinner()
+                                console.print()
+                                icon = tool_icons.get(tool_name, "🔧")
+                                title = {
+                                    "task": "Subagent result",
+                                    "wait": "Subagent results",
+                                    "task_progress": "Subagent progress",
+                                }.get(tool_name, f"{tool_name} result")
+
+                                tool_call_id = getattr(message, "tool_call_id", "")
+                                if tool_call_id and background_registry:
+                                    try:
+                                        task = background_registry.get_by_id(tool_call_id)
+                                        display_id = getattr(task, "display_id", "")
+                                        if display_id:
+                                            title = f"{title} ({display_id})"
+                                    except Exception:  # noqa: BLE001, S110
+                                        pass
+
+                                console.print(
+                                    Panel(
+                                        Markdown(tool_content),
+                                        title=f"{icon} {title}",
+                                        border_style=COLORS["tool"],
+                                        box=box.ROUNDED,
+                                        padding=(0, 1),
+                                    )
+                                )
+                                console.print()
+                                state.update_spinner(f"[bold {COLORS['thinking']}]Agent is thinking...")
+                                state.start_spinner()
 
                         # Track consecutive empty results from sensitive tools
                         if (
@@ -409,6 +483,7 @@ async def execute_task(  # noqa: PLR0911
                                     token_tracker,
                                     session,
                                     sandbox_completer,
+                                    background_registry,
                                     _retry_count=1,
                                 )
                             return None  # Recovery failed, stop
@@ -577,6 +652,7 @@ async def execute_task(  # noqa: PLR0911
                     token_tracker,
                     session,
                     sandbox_completer,
+                    background_registry,
                     _retry_count=1,
                 )
             return None  # Recovery failed, stop
