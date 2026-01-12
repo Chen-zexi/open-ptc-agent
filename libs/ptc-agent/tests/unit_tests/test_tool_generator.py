@@ -3,8 +3,6 @@
 import os
 from unittest.mock import patch
 
-import pytest
-
 from ptc_agent.config.core import MCPServerConfig
 from ptc_agent.core.tool_generator import ToolFunctionGenerator
 

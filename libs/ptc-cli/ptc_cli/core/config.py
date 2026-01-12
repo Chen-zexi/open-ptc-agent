@@ -259,10 +259,7 @@ class Settings:
             Path to ~/.ptc-agent/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
-            msg = (
-                f"Invalid agent name: {agent_name!r}. "
-                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
-            )
+            msg = f"Invalid agent name: {agent_name!r}. Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
             raise ValueError(msg)
         return Path.home() / ".ptc-agent" / agent_name
 
@@ -287,10 +284,7 @@ class Settings:
             Path to ~/.ptc-agent/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
-            msg = (
-                f"Invalid agent name: {agent_name!r}. "
-                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
-            )
+            msg = f"Invalid agent name: {agent_name!r}. Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
             raise ValueError(msg)
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)

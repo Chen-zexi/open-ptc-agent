@@ -148,6 +148,7 @@ enable_error_code = ["deprecated"]
 disable_error_code = ["import-untyped"]
 disallow_any_generics = false
 warn_return_any = false
+exclude = ["tests/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

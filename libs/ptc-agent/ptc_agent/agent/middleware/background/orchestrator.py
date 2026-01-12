@@ -220,9 +220,9 @@ class BackgroundSubagentOrchestrator:
                 result_count=len(pending_results),
             )
 
-            # Get final state from agent (need to invoke to get final state)
-            result = await self.agent.ainvoke(current_state, config)
-            messages = result.get("messages", [])
+            # Get final state from checkpointer without re-invoking
+            state_snapshot = await self.agent.aget_state(config)
+            messages = state_snapshot.values.get("messages", [])
 
             # Format and inject results
             results_summary = self._format_results(pending_results)
