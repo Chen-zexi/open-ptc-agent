@@ -32,33 +32,32 @@ When you invoke subagents via the `task()` tool, they run in the **background** 
 
 1. **Immediate Response**: You receive confirmation with a Task ID (e.g., "Task-1 deployed")
 2. **Continue Working**: You can proceed with other tasks while subagents execute
-3. **Monitor Progress**: Use `task_progress()` to see subagent activity
-4. **Collect Results**: Use `wait()` or complete your work to trigger result collection
+3. **Check Progress/Results**: Use `task_output()` to see progress or get results
+4. **Get Results**: You MUST call `task_output()` to retrieve the actual results
 5. **Synthesis**: Incorporate subagent results into your final response
 
 ### Management Tools
 
-**`wait(task_number=None, timeout=60.0)`**
-- Wait for specific task: `wait(task_number=1)` - waits for Task-1
-- Wait for all tasks: `wait()` - waits for all pending background tasks
-- Custom timeout: `wait(task_number=2, timeout=120)` - wait up to 2 minutes
+**`task_output(task_number=None)`**
+- Get specific task output: `task_output(task_number=1)` - shows Task-1 progress or result
+- Get all task outputs: `task_output()` - overview of all background tasks
+- If task is running: shows progress (status, tool calls, current activity, elapsed time)
+- If task is completed: returns the cached result
 
-**`task_progress(task_number=None)`**
-- Check specific task: `task_progress(task_number=1)` - shows Task-1 status
-- Check all tasks: `task_progress()` - overview of all background tasks
-- Shows: status (running/completed), tool calls made, current activity, elapsed time
+**`wait(task_number=None, timeout=60.0)`**
+- Wait for specific task: `wait(task_number=1)` - blocks until Task-1 completes
+- Wait for all tasks: `wait()` - blocks until all pending background tasks complete
+- Custom timeout: `wait(task_number=2, timeout=120)` - wait up to 2 minutes
 
 ### Important Guidelines
 
-1. **Avoid Duplicate Assignments**: Before assigning a new task, check if a similar task is already running using `task_progress()`. Do not assign the same or overlapping tasks to multiple subagents.
+1. **Avoid Duplicate Assignments**: Before assigning a new task, check if a similar task is already running using `task_output()`. Do not assign the same or overlapping tasks to multiple subagents.
 
-2. **Use Task IDs**: Reference subagents by their Task-N ID when checking progress or waiting for specific results.
+2. **Use Task IDs**: Reference subagents by their Task-N ID when checking output or waiting for specific results.
 
 3. **Independent Tasks Only**: Background execution works best for independent tasks. For tasks with dependencies, wait for prerequisite tasks to complete first.
 
-4. **Result Collection Options**:
-   - **Explicit wait**: Call `wait()` or `wait(task_number=N)` when you need results
-   - **Implicit collection**: When you finish your work, pending results are automatically collected
+4. **Getting Results**: You MUST call `task_output()` to retrieve results. When tasks complete, you will be notified but results are not automatically included - you need to explicitly fetch them.
 
 ### Example Flow
 ```
@@ -67,10 +66,11 @@ User: "Research topics A, B, C and synthesize findings"
 1. task() -> Research topic A  → "Task-1 deployed"
 2. task() -> Research topic B  → "Task-2 deployed"
 3. task() -> Research topic C  → "Task-3 deployed"
-4. task_progress()             → Shows 3 tasks running
-5. [Continue other work or wait...]
-6. wait()                      → Collects all results
-7. Synthesize findings into final response
+4. task_output()               → Shows 3 tasks running
+5. [Continue other work...]
+6. [Notification: Tasks completed]
+7. task_output()               → Get all results
+8. Synthesize findings into final response
 ```
 
 ### Task Status Indicators

@@ -19,6 +19,28 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _sync_task_completion(task: BackgroundTask) -> None:
+    """Sync task completion status from asyncio task.
+
+    If the asyncio task is done but task.completed is False,
+    update task.completed and task.result.
+    """
+    if task.completed:
+        return
+    if task.asyncio_task is None:
+        return
+    if not task.asyncio_task.done():
+        return
+
+    # Task finished but not yet synced
+    task.completed = True
+    try:
+        task.result = task.asyncio_task.result()
+    except Exception as e:
+        task.error = str(e)
+        task.result = {"success": False, "error": str(e)}
+
+
 def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool:
     """Create the wait tool for entering the waiting room.
 
@@ -58,6 +80,14 @@ def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool
             task = await registry.get_by_number(task_number)
 
             if task:
+                # Check if still running (wait timed out but task continues)
+                if isinstance(result, dict) and result.get("status") == "timeout":
+                    # Don't mark as seen - task is still running
+                    return (
+                        f"**{task.display_id}** ({task.subagent_type}) still running "
+                        f"(waited {timeout}s, task continues in background)"
+                    )
+                task.result_seen = True  # Mark as seen only if completed
                 return (
                     f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
                     f"{_format_result(result)}"
@@ -73,12 +103,32 @@ def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool
         if not results:
             return "No background tasks were pending."
 
-        output = f"All {len(results)} background task(s) completed:\n\n"
+        # Count completed vs still running
+        completed_count = sum(
+            1 for r in results.values()
+            if not (isinstance(r, dict) and r.get("status") == "timeout")
+        )
+        running_count = len(results) - completed_count
+
+        if running_count == 0:
+            output = f"All {len(results)} background task(s) completed:\n\n"
+        elif completed_count == 0:
+            output = f"All {len(results)} background task(s) still running (waited {timeout}s):\n\n"
+        else:
+            output = f"Background tasks: {completed_count} completed, {running_count} still running:\n\n"
+
         for task_id, result in results.items():
             task = registry.get_by_id(task_id)
             if task:
-                output += f"### {task.display_id} ({task.subagent_type})\n"
-                output += _format_result(result) + "\n\n"
+                is_running = isinstance(result, dict) and result.get("status") == "timeout"
+                if not is_running:
+                    task.result_seen = True  # Mark as seen only if completed
+                status = "still running" if is_running else "completed"
+                output += f"### {task.display_id} ({task.subagent_type}) - {status}\n"
+                if not is_running:
+                    output += _format_result(result) + "\n\n"
+                else:
+                    output += "\n"
         return output
 
     return StructuredTool.from_function(
@@ -92,38 +142,53 @@ def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool
     )
 
 
-def create_task_progress_tool(registry: BackgroundTaskRegistry) -> StructuredTool:
-    """Create tool to check background task progress.
+def create_task_output_tool(registry: BackgroundTaskRegistry) -> StructuredTool:
+    """Create tool to get background task output.
 
-    This tool allows the main agent to monitor the status and progress
-    of background subagents without waiting for them to complete.
+    This tool allows the main agent to get the output of background subagents.
+    If the task is still running, it shows progress. If completed, it returns
+    the cached result.
 
     Args:
         registry: The BackgroundTaskRegistry instance
 
     Returns:
-        A StructuredTool for checking progress
+        A StructuredTool for getting task output
     """
 
-    async def task_progress(task_number: int | None = None) -> str:
-        """Check background task progress.
+    async def task_output(task_number: int | None = None) -> str:
+        """Get background task output.
 
         Args:
             task_number: Task number or None for all
 
         Returns:
-            Status, tool calls, elapsed time
+            Result if completed, progress if still running
         """
         if task_number is not None:
             task = await registry.get_by_number(task_number)
             if not task:
                 return f"Task-{task_number} not found"
+            # Sync completion status from asyncio task
+            _sync_task_completion(task)
+            # If completed, return the result
+            if task.completed:
+                task.result_seen = True  # Mark as seen
+                return (
+                    f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
+                    f"{_format_result(task.result)}"
+                )
+            # If still running, show progress
             return _format_task_progress(task)
 
         # Show all tasks
         all_tasks = await registry.get_all_tasks()
         if not all_tasks:
             return "No background tasks have been assigned yet."
+
+        # Sync completion status for all tasks
+        for task in all_tasks:
+            _sync_task_completion(task)
 
         pending_count = sum(1 for t in all_tasks if not t.completed)
         completed_count = len(all_tasks) - pending_count
@@ -134,19 +199,26 @@ def create_task_progress_tool(registry: BackgroundTaskRegistry) -> StructuredToo
         )
 
         for task in sorted(all_tasks, key=lambda t: t.task_number):
-            output += _format_task_progress(task) + "\n"
+            if task.completed:
+                task.result_seen = True  # Mark as seen
+                output += (
+                    f"### {task.display_id} ({task.subagent_type})\n"
+                    f"{_format_result(task.result)}\n\n"
+                )
+            else:
+                output += _format_task_progress(task) + "\n"
 
         return output
 
     return StructuredTool.from_function(
-        name="task_progress",
+        name="task_output",
         description=(
-            "Check the progress of background subagent tasks. Shows status, "
-            "tool calls made, current activity, and elapsed time. "
-            "Use task_progress(task_number=1) for a specific task or "
-            "task_progress() to see all tasks."
+            "Get the output of background subagent tasks. Returns the result "
+            "if the task is completed, or shows progress if still running. "
+            "Use task_output(task_number=1) for a specific task or "
+            "task_output() to see all tasks."
         ),
-        coroutine=task_progress,
+        coroutine=task_output,
     )
 
 

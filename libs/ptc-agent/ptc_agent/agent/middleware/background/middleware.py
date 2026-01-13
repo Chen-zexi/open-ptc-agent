@@ -18,7 +18,7 @@ from langgraph.types import Command
 
 from ptc_agent.agent.middleware.background.registry import BackgroundTaskRegistry
 from ptc_agent.agent.middleware.background.tools import (
-    create_task_progress_tool,
+    create_task_output_tool,
     create_wait_tool,
 )
 
@@ -90,13 +90,12 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         self.registry = BackgroundTaskRegistry()
         self.timeout = timeout
         self.enabled = enabled
-        self._pending_results: dict[str, Any] = {}
 
         # Create native tools for this middleware
         # These allow the main agent to wait for and check on background tasks
         self.tools = [
             create_wait_tool(self),
-            create_task_progress_tool(self.registry),
+            create_task_output_tool(self.registry),
         ]
 
     def wrap_tool_call(
@@ -165,8 +164,15 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         async def execute_in_background() -> dict[str, Any]:
             """Execute the subagent in the background."""
             # Context already has task_id from parent
+            #
+            # Important: the main agent run may be interrupted/cancelled. Background subagent
+            # execution must continue independently, so we shield the handler coroutine.
+            async def run_handler() -> ToolMessage | Command:
+                return await handler(request)
+
+            handler_task: asyncio.Task[ToolMessage | Command] = asyncio.create_task(run_handler())
             try:
-                result = await handler(request)
+                result = await asyncio.shield(handler_task)
                 logger.debug(
                     "Background subagent completed",
                     tool_call_id=tool_call_id,
@@ -174,6 +180,25 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     result_type=type(result).__name__,
                 )
                 return {"success": True, "result": result}
+            except asyncio.CancelledError:
+                # If this background wrapper is cancelled, keep the underlying handler running
+                # and await it to completion so the registry can still observe a result.
+                logger.info(
+                    "Background subagent cancellation requested; continuing",
+                    tool_call_id=tool_call_id,
+                    display_id=task.display_id,
+                )
+                try:
+                    result = await handler_task
+                    return {"success": True, "result": result}
+                except Exception as e:
+                    logger.error(
+                        "Background subagent failed after cancellation",
+                        tool_call_id=tool_call_id,
+                        display_id=task.display_id,
+                        error=str(e),
+                    )
+                    return {"success": False, "error": str(e), "error_type": type(e).__name__}
             except Exception as e:
                 logger.error(
                     "Background subagent failed",
@@ -201,8 +226,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             f"- Status: Running in background\n\n"
             f"You can:\n"
             f"- Continue with other work\n"
-            f"- Use `task_progress(task_number={task_number})` to monitor progress\n"
-            f"- Use `wait(task_number={task_number})` to get results when ready\n"
+            f"- Use `task_output(task_number={task_number})` to get progress or result\n"
+            f"- Use `wait(task_number={task_number})` to block until complete\n"
             f"- Use `wait()` to wait for all background tasks"
         )
 
@@ -217,89 +242,20 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         return None
 
     async def aafter_agent(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
-        """Waiting room: collect background results after agent ends.
+        """No-op hook after agent ends.
 
-        This hook runs after the agent decides it has no more work to do.
-        We use it to:
-        1. Check if there are pending background tasks
-        2. Wait for them to complete (with timeout)
-        3. Store results for the orchestrator to use
-
-        Note: This hook cannot return a Command to re-enter the agent loop.
-        The BackgroundSubagentOrchestrator handles re-invocation.
+        The waiting room logic has been moved to the orchestrator.
+        This hook returns immediately without blocking.
         """
-        if not self.enabled:
-            return None
+        return None
 
-        # If results already collected by wait() tool, don't collect again
-        # This prevents duplicate result injection when agent explicitly waited
-        if self._pending_results:
-            logger.debug(
-                "Results already collected via wait() tool, skipping",
-                result_count=len(self._pending_results),
-            )
-            return None
+    def clear_registry(self) -> None:
+        """Clear the task registry.
 
-        # Check for tasks that need result collection (running OR completed-but-unprocessed)
-        # Note: We can't use pending_count here because it returns 0 for tasks that
-        # completed before this hook runs (is_pending checks asyncio_task.done()).
-        # We need to check for any task that hasn't had its result collected yet.
-        has_tasks_to_process = any(task.asyncio_task is not None and not task.completed for task in self.registry._tasks.values())
-
-        if not has_tasks_to_process:
-            logger.debug("No background tasks to process")
-            return None
-
-        pending_count = self.registry.pending_count
-        logger.info(
-            "Agent ended with background tasks, entering waiting room",
-            tasks_to_process=sum(1 for task in self.registry._tasks.values() if task.asyncio_task is not None and not task.completed),
-            still_pending=pending_count,
-            timeout=self.timeout,
-        )
-
-        # Wait for all background tasks
-        results = await self.registry.wait_for_all(timeout=self.timeout)
-
-        # Store results for the orchestrator
-        self._pending_results = results
-
-        logger.info(
-            "Waiting room collected results",
-            result_count=len(results),
-            success_count=sum(1 for r in results.values() if isinstance(r, dict) and r.get("success", False)),
-        )
-
-        # Return state update indicating we have pending results
-        return {
-            "_background_results": results,
-            "_has_pending_results": bool(results),
-        }
-
-    def get_pending_results(self) -> dict[str, Any]:
-        """Get collected results for the orchestrator.
-
-        Returns:
-            Dict mapping task_id to result
+        Should be called by the orchestrator after handling all tasks.
         """
-        return self._pending_results.copy()
-
-    def has_pending_results(self) -> bool:
-        """Check if there are pending results to process.
-
-        Returns:
-            True if there are results waiting to be processed
-        """
-        return bool(self._pending_results)
-
-    def clear_results(self) -> None:
-        """Clear results after processing.
-
-        Should be called by the orchestrator after re-invocation.
-        """
-        self._pending_results.clear()
         self.registry.clear()
-        logger.debug("Cleared background results and registry")
+        logger.debug("Cleared background task registry")
 
     async def cancel_all_tasks(self) -> int:
         """Cancel all pending background tasks.

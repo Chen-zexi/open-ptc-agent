@@ -45,6 +45,9 @@ class BackgroundTask:
     completed: bool = False
     """Whether the task has completed."""
 
+    result_seen: bool = False
+    """Whether the agent has seen this task's result (via task_output, wait, or notification)."""
+
     # Tool call tracking
     tool_call_counts: dict[str, int] = field(default_factory=dict)
     """Count of tool calls by tool name."""

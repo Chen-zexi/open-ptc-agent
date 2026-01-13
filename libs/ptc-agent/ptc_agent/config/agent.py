@@ -75,6 +75,11 @@ class AgentConfig(BaseModel):
     # List of enabled subagent names (available: research, general-purpose)
     subagents_enabled: list[str] = Field(default_factory=lambda: ["general-purpose"])
 
+    # Background task configuration
+    # If True, wait for background tasks to complete before returning to CLI
+    # If False (default), return immediately and show status of running tasks
+    background_auto_wait: bool = False
+
     # Note: deep-agent automatically enables middlewares (TodoList, Summarization, etc.)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -124,6 +129,7 @@ class AgentConfig(BaseModel):
             subagents_enabled: Subagent names (default: ["general-purpose"])
             use_custom_filesystem_tools: Use Read/Write/Edit tools (default: True)
             enable_view_image: Enable image viewing (default: True)
+            background_auto_wait: Wait for background tasks (default: False)
 
         Returns:
             Configured AgentConfig instance
@@ -217,6 +223,7 @@ class AgentConfig(BaseModel):
             use_custom_filesystem_tools=kwargs.pop("use_custom_filesystem_tools", True),
             enable_view_image=kwargs.pop("enable_view_image", True),
             subagents_enabled=kwargs.pop("subagents_enabled", ["general-purpose"]),
+            background_auto_wait=kwargs.pop("background_auto_wait", False),
         )
 
         # Set runtime data - store the LLM client directly

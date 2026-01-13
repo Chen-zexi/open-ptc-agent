@@ -429,6 +429,7 @@ def load_from_dict(
     agent_data = config_data.get("agent", {})
     use_custom_filesystem_tools = agent_data.get("use_custom_filesystem_tools", True)
     enable_view_image = agent_data.get("enable_view_image", True)
+    background_auto_wait = agent_data.get("background_auto_wait", False)
 
     # Load Subagent configuration (optional section)
     subagents_data = config_data.get("subagents", {})
@@ -445,6 +446,7 @@ def load_from_dict(
         use_custom_filesystem_tools=use_custom_filesystem_tools,
         enable_view_image=enable_view_image,
         subagents_enabled=subagents_enabled,
+        background_auto_wait=background_auto_wait,
     )
 
     # Store runtime data if available
@@ -599,6 +601,7 @@ filesystem:
 agent:
   use_custom_filesystem_tools: true
   enable_view_image: true
+  background_auto_wait: false  # true to wait for background tasks before returning to CLI
 
 # Subagents (optional)
 # --------------------

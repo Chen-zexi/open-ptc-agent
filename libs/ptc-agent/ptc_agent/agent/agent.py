@@ -374,6 +374,7 @@ class PTCAgent:
         return BackgroundSubagentOrchestrator(
             agent=agent,
             middleware=background_middleware,
+            auto_wait=self.config.background_auto_wait,
         )
 
 
