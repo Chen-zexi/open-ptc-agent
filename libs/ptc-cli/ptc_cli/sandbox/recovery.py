@@ -25,11 +25,16 @@ SANDBOX_ERROR_PATTERNS = [
     "no route to host",
     # Daytona API errors (sandbox stopped)
     "400 bad request",
+    "bad request",  # Without "400" prefix (Daytona sometimes omits status code)
     "failed to upload",
     "toolbox",
     "502 bad gateway",
     "503 service unavailable",
     "504 gateway timeout",
+    # Daytona sandbox state errors
+    "no ip address",  # Sandbox not started/available
+    "is the sandbox started",  # Daytona hint message
+    "sandbox is not started",  # Stop error when already stopped
 ]
 
 

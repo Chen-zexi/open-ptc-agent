@@ -480,10 +480,32 @@ class PTCSandbox:
         Used for session persistence - stops the sandbox so it can be
         restarted quickly on the next session, rather than deleting it.
         """
-        if self.sandbox:
+        if not self.sandbox:
+            return
+
+        # Check state before stopping to avoid errors when already stopped
+        try:
+            state = getattr(self.sandbox, "state", None)
+            if state:
+                state_value = state.value if hasattr(state, "value") else str(state)
+                if state_value == "stopped":
+                    logger.info("Sandbox already stopped", sandbox_id=self.sandbox_id)
+                    return
+        except Exception as e:
+            # If state check fails, log and continue with stop attempt
+            logger.debug("Could not check sandbox state", error=str(e))
+
+        try:
             logger.info("Stopping sandbox", sandbox_id=self.sandbox_id)
             await self._run_sync(self.sandbox.stop, timeout=60)
             logger.info("Sandbox stopped", sandbox_id=self.sandbox_id)
+        except Exception as e:
+            # Log warning but don't raise - sandbox may already be stopped or unavailable
+            logger.warning(
+                "Failed to stop sandbox",
+                sandbox_id=self.sandbox_id,
+                error=str(e),
+            )
 
     async def _setup_workspace(self) -> None:
         """Create workspace directory structure."""

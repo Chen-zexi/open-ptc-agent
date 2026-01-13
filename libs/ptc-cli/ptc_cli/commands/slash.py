@@ -5,11 +5,13 @@ from __future__ import annotations
 import sys
 import termios
 import tty
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ptc_cli.core import console, get_syntax_theme
 from ptc_cli.display import show_help
+from ptc_cli.sandbox.recovery import is_sandbox_error, recover_sandbox
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -58,6 +60,14 @@ EXCLUDED_DIRS = {"code", "tools", "mcp_servers"}
 HOME_PREFIX = "/home/daytona/"
 
 
+class SandboxRecoveryError(Exception):
+    """Raised when sandbox recovery fails after disconnection."""
+
+    def __init__(self) -> None:
+        """Initialize with default message."""
+        super().__init__("Failed to recover sandbox")
+
+
 def _normalize_path(path: str) -> str:
     """Remove /home/daytona/ prefix for cleaner display."""
     if path.startswith(HOME_PREFIX):
@@ -100,6 +110,38 @@ def _render_tree(files: list[str]) -> list[str]:
     return lines
 
 
+async def _execute_with_recovery[T](
+    session: _SessionManager,
+    operation_name: str,
+    operation: Callable[[], Awaitable[T]],
+) -> T:
+    """Execute a sandbox operation with automatic recovery on failure.
+
+    Args:
+        session: The PTC session
+        operation_name: Description of operation for error messages
+        operation: Async callable that performs the sandbox operation
+
+    Returns:
+        Result of the operation (which may be None for operations like read_file)
+
+    Raises:
+        SandboxRecoveryError: If sandbox recovery fails
+        Exception: If error is not sandbox-related
+    """
+    try:
+        return await operation()
+    except Exception as e:
+        if is_sandbox_error(str(e)):
+            console.print(f"[yellow]Sandbox disconnected while {operation_name}[/yellow]")
+            if await recover_sandbox(session, console):
+                console.print()
+                # Retry once after recovery
+                return await operation()
+            raise SandboxRecoveryError from e
+        raise
+
+
 async def _handle_files_command(session: _SessionManager | None, *, show_all: bool) -> None:
     """Handle the /files command to list files in sandbox.
 
@@ -111,8 +153,14 @@ async def _handle_files_command(session: _SessionManager | None, *, show_all: bo
         console.print("[yellow]No active sandbox session[/yellow]")
         return
 
-    sandbox = await session.get_sandbox()
-    files = sandbox.glob_files("**/*", path=".")  # type: ignore[union-attr]
+    async def _list_files() -> list[str]:
+        sandbox = await session.get_sandbox()
+        return sandbox.glob_files("**/*", path=".")  # type: ignore[union-attr]
+
+    try:
+        files = await _execute_with_recovery(session, "listing files", _list_files)
+    except SandboxRecoveryError:
+        return
 
     # Normalize paths first (remove /home/daytona/ prefix)
     normalized_files = [_normalize_path(f) for f in files]
@@ -155,15 +203,19 @@ async def _handle_view_command(session: _SessionManager | None, path: str) -> No
         console.print("[yellow]No active sandbox session[/yellow]")
         return
 
-    sandbox = await session.get_sandbox()
-
-    # Normalize path to absolute sandbox path (user enters relative paths from /files output)
-    sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
-
     # Check if image file - auto-download instead of terminal rendering
     image_extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
     if path.lower().endswith(image_extensions):
-        image_bytes = sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
+
+        async def _download_image() -> bytes | None:
+            sandbox = await session.get_sandbox()
+            sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
+            return sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
+
+        try:
+            image_bytes = await _execute_with_recovery(session, "downloading image", _download_image)
+        except SandboxRecoveryError:
+            return
         if image_bytes:
             local_path = Path.cwd() / Path(path).name
             local_path.write_bytes(image_bytes)
@@ -172,7 +224,15 @@ async def _handle_view_command(session: _SessionManager | None, path: str) -> No
             console.print(f"[red]Failed to download image: {path}[/red]")
     else:
         # Text file - use Rich Syntax highlighting
-        content = sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+        async def _read_file() -> str | None:
+            sandbox = await session.get_sandbox()
+            sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
+            return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+
+        try:
+            content = await _execute_with_recovery(session, "reading file", _read_file)
+        except SandboxRecoveryError:
+            return
         if content is None:
             console.print(f"[red]File not found: {path}[/red]")
         else:
@@ -200,12 +260,15 @@ async def _handle_copy_command(session: _SessionManager | None, path: str) -> No
         console.print("[yellow]No active sandbox session[/yellow]")
         return
 
-    sandbox = await session.get_sandbox()
+    async def _read_file() -> str | None:
+        sandbox = await session.get_sandbox()
+        sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
+        return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
 
-    # Normalize path to absolute sandbox path
-    sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
-    content = sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
-
+    try:
+        content = await _execute_with_recovery(session, "reading file", _read_file)
+    except SandboxRecoveryError:
+        return
     if content is None:
         console.print(f"[red]File not found: {path}[/red]")
     else:
@@ -459,11 +522,6 @@ async def _handle_download_command(
         console.print("[yellow]No active sandbox session[/yellow]")
         return
 
-    sandbox = await session.get_sandbox()
-
-    # Normalize path to absolute sandbox path
-    sandbox_path = sandbox.normalize_path(user_path)  # type: ignore[union-attr]
-
     # Expand ~ and make absolute for local path
     local_path = Path(local_path_str).expanduser()
     if not local_path.is_absolute():
@@ -484,19 +542,33 @@ async def _handle_download_command(
     )
     try:
         if user_path.lower().endswith(binary_extensions):
-            binary_content = sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
+
+            async def _download_binary() -> bytes | None:
+                sandbox = await session.get_sandbox()
+                sandbox_path = sandbox.normalize_path(user_path)  # type: ignore[union-attr]
+                return sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
+
+            binary_content = await _execute_with_recovery(session, "downloading file", _download_binary)
             if binary_content:
                 local_path.write_bytes(binary_content)
                 console.print(f"[green]Downloaded to: {local_path}[/green]")
             else:
                 console.print(f"[red]Failed to download: {user_path}[/red]")
         else:
-            text_content = sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+
+            async def _download_text() -> str | None:
+                sandbox = await session.get_sandbox()
+                sandbox_path = sandbox.normalize_path(user_path)  # type: ignore[union-attr]
+                return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+
+            text_content = await _execute_with_recovery(session, "downloading file", _download_text)
             if text_content:
                 local_path.write_text(text_content)
                 console.print(f"[green]Downloaded to: {local_path}[/green]")
             else:
                 console.print(f"[red]Failed to download: {user_path}[/red]")
+    except SandboxRecoveryError:
+        return
     except (OSError, UnicodeDecodeError) as e:
         # OSError: file I/O errors, UnicodeDecodeError: text encoding issues
         console.print(f"[red]Download error: {e}[/red]")
@@ -540,14 +612,22 @@ async def handle_command(
 
         # Clear sandbox directories if session available
         if session and session.sandbox:
-            sandbox = await session.get_sandbox()
-            dirs_to_clear = ["data", "results", "code", "large_tool_results"]
-            # Use find -delete to avoid glob expansion issues with set -e
-            for dir_name in dirs_to_clear:
-                await sandbox.execute_bash_command(  # type: ignore[union-attr]
-                    f"find /home/daytona/{dir_name} -mindepth 1 -delete 2>/dev/null || true"
-                )
-            console.print("[green]Conversation and sandbox files cleared.[/green]")
+
+            async def _clear_sandbox_dirs() -> bool:
+                sandbox = await session.get_sandbox()
+                dirs_to_clear = ["data", "results", "code", "large_tool_results"]
+                # Use find -delete to avoid glob expansion issues with set -e
+                for dir_name in dirs_to_clear:
+                    await sandbox.execute_bash_command(  # type: ignore[union-attr]
+                        f"find /home/daytona/{dir_name} -mindepth 1 -delete 2>/dev/null || true"
+                    )
+                return True
+
+            try:
+                await _execute_with_recovery(session, "clearing sandbox", _clear_sandbox_dirs)
+                console.print("[green]Conversation and sandbox files cleared.[/green]")
+            except SandboxRecoveryError:
+                console.print("[yellow]Conversation cleared. Sandbox files could not be cleared.[/yellow]")
         else:
             console.print("[green]Conversation cleared.[/green]")
         console.print()
