@@ -93,7 +93,7 @@ def execute_code_tool(sandbox, mcp_registry):
 class TestBasicExecution:
     """Tests for basic code execution without chart generation."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_simple_print(self, execute_code_tool):
         """Test basic print statement execution."""
         code = """
@@ -107,7 +107,7 @@ print(f"Result: {x}")
         assert "Hello from sandbox!" in result
         assert "Result: 3" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_error_handling(self, execute_code_tool):
         """Test that execution errors are properly reported."""
         code = """
@@ -129,7 +129,7 @@ undefined_variable + 1
 class TestMatplotlibCharts:
     """Tests for matplotlib chart generation and upload."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_matplotlib_show(self, execute_code_tool):
         """Test matplotlib chart with plt.show() - captured via artifacts."""
         code = """
@@ -159,7 +159,7 @@ print("Chart generated with plt.show()")
         if "Uploaded images:" in result:
             assert "![" in result  # Markdown image format
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_matplotlib_savefig(self, execute_code_tool):
         """Test matplotlib chart saved with plt.savefig() - detected via files_created."""
         code = """
@@ -192,7 +192,7 @@ print("Saved bar_chart.png to results/")
         if "Uploaded images:" in result:
             assert "![" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_multiple_charts(self, execute_code_tool):
         """Test multiple image generation and upload."""
         code = """
@@ -254,7 +254,7 @@ print("Generated 3 charts: trig_chart.png, scatter_chart.png, pie_chart.png")
 class TestPILImages:
     """Tests for PIL image generation and upload."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_pil_image_generation(self, execute_code_tool):
         """Test PIL image creation and upload."""
         code = """
@@ -289,7 +289,7 @@ print("Created PIL test image")
 class TestStorageURLFormat:
     """Tests for verifying storage URL format in responses."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_markdown_url_format(self, execute_code_tool):
         """Verify storage URLs use correct markdown format."""
         code = """
@@ -332,7 +332,7 @@ print("Chart saved for URL test")
 class TestExecutionResult:
     """Tests for ExecutionResult object structure."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_execution_result_charts_field(self, sandbox):
         """Test that ExecutionResult properly captures charts."""
         code = """
@@ -358,7 +358,7 @@ print("Testing charts field")
                 assert hasattr(chart, "type")
                 assert hasattr(chart, "title")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_execution_result_files_created(self, sandbox):
         """Test that ExecutionResult tracks created files."""
         code = """

@@ -130,7 +130,7 @@ def grep_tool(sandbox_with_files):
 class TestGlobTool:
     """Integration tests for the Glob tool."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_basic_py_pattern(self, glob_tool):
         """Test basic *.py pattern finds Python files in current directory."""
         result = await glob_tool.ainvoke({"pattern": "*.py"})
@@ -138,7 +138,7 @@ class TestGlobTool:
         assert "test_file1.py" in result
         assert "test_file2.py" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_recursive_pattern(self, glob_tool):
         """Test recursive **/*.py pattern finds nested files."""
         result = await glob_tool.ainvoke({"pattern": "**/*.py"})
@@ -146,21 +146,21 @@ class TestGlobTool:
         # Should find files in subdirectories
         assert "nested_file.py" in result or "subdir" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_in_subdirectory(self, glob_tool):
         """Test glob pattern in specific subdirectory."""
         result = await glob_tool.ainvoke({"pattern": "*.py", "path": "subdir"})
 
         assert "nested_file.py" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_txt_pattern(self, glob_tool):
         """Test *.txt pattern finds text files."""
         result = await glob_tool.ainvoke({"pattern": "*.txt"})
 
         assert "test_file3.txt" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_no_matches(self, glob_tool):
         """Test glob pattern with no matches returns appropriate message."""
         result = await glob_tool.ainvoke({"pattern": "*.nonexistent"})
@@ -173,7 +173,7 @@ class TestGlobTool:
 class TestGlobDirectMethods:
     """Test direct sandbox glob methods."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_direct_glob_files(self, sandbox_with_files):
         result = await sandbox_with_files.aglob_files("*.py", ".")
 
@@ -190,7 +190,7 @@ class TestGlobDirectMethods:
 class TestGrepTool:
     """Integration tests for the Grep tool."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_basic_search(self, grep_tool):
         """Test basic search for a string pattern."""
         result = await grep_tool.ainvoke({
@@ -200,7 +200,7 @@ class TestGrepTool:
 
         assert "test_file2.py" in result or "test_file3.txt" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_content_mode(self, grep_tool):
         """Test grep with content output mode shows matching lines."""
         result = await grep_tool.ainvoke({
@@ -210,7 +210,7 @@ class TestGrepTool:
 
         assert "SEARCH_TARGET_ALPHA" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_count_mode(self, grep_tool):
         """Test grep with count output mode."""
         result = await grep_tool.ainvoke({
@@ -221,7 +221,7 @@ class TestGrepTool:
         # Count mode should return some numeric information
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_with_glob_filter(self, grep_tool):
         """Test grep filtered to specific file types."""
         result = await grep_tool.ainvoke({
@@ -233,7 +233,7 @@ class TestGrepTool:
         # Should NOT include .txt files
         assert "test_file3.txt" not in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_case_insensitive(self, grep_tool):
         """Test case-insensitive search."""
         result = await grep_tool.ainvoke({
@@ -245,7 +245,7 @@ class TestGrepTool:
         # Should still find uppercase SEARCH_TARGET_ALPHA
         assert "test_file2.py" in result or "test_file3.txt" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_with_context_lines(self, grep_tool):
         """Test grep with context lines (-A and -B flags)."""
         result = await grep_tool.ainvoke({
@@ -258,7 +258,7 @@ class TestGrepTool:
         # Should include context around the match
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_no_matches(self, grep_tool):
         """Test grep with no matching pattern."""
         result = await grep_tool.ainvoke({
@@ -274,7 +274,7 @@ class TestGrepTool:
 class TestGrepDirectMethods:
     """Test direct sandbox grep methods."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_direct_grep_content(self, sandbox_with_files):
         result = await sandbox_with_files.agrep_content(
             pattern="SEARCH_TARGET_ALPHA",
@@ -294,19 +294,19 @@ class TestGrepDirectMethods:
 class TestSandboxDiagnostics:
     """Diagnostic tests to verify sandbox functionality."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_list_directory(self, sandbox_with_files):
         contents = await sandbox_with_files.als_directory(".")
 
         assert isinstance(contents, list)
         assert len(contents) > 0
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_files(self, sandbox_with_files):
         files = await sandbox_with_files.aglob_files("*.py", ".")
         assert isinstance(files, list)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_read_file(self, sandbox_with_files):
         content = await sandbox_with_files.aread_file_text("test_file1.py")
 

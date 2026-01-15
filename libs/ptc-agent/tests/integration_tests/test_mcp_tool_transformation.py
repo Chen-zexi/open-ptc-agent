@@ -184,14 +184,14 @@ def config(sandbox_session):
 class TestConfiguration:
     """Tests for configuration loading."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_config_loads_mcp_servers(self, config):
         """Test that MCP servers are configured."""
         assert hasattr(config, "mcp")
         assert hasattr(config.mcp, "servers")
         # May have 0 servers configured - that's valid
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_config_has_daytona_settings(self, config):
         """Test that Daytona settings are present."""
         assert hasattr(config, "daytona")
@@ -207,19 +207,19 @@ class TestConfiguration:
 class TestMCPRegistry:
     """Tests for MCP registry functionality."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_registry_exists(self, mcp_registry):
         """Test that MCP registry was created."""
         assert mcp_registry is not None
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_registry_has_tools_method(self, mcp_registry):
         """Test that registry has get_all_tools method."""
         assert hasattr(mcp_registry, "get_all_tools")
         tools_by_server = mcp_registry.get_all_tools()
         assert isinstance(tools_by_server, dict)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_tools_have_required_attributes(self, mcp_registry):
         """Test that discovered tools have required attributes."""
         tools_by_server = mcp_registry.get_all_tools()
@@ -240,13 +240,13 @@ class TestMCPRegistry:
 class TestSandboxDirectoryStructure:
     """Tests for sandbox directory structure."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_work_directory_exists(self, sandbox):
         """Test that sandbox work directory is set."""
         work_dir = getattr(sandbox, "_work_dir", None)
         assert work_dir is not None
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_can_list_work_directory(self, sandbox):
         """Test that we can list the work directory."""
         work_dir = getattr(sandbox, "_work_dir", "/home/daytona")
@@ -257,7 +257,7 @@ class TestSandboxDirectoryStructure:
         except Exception as e:
             pytest.skip(f"Could not list directory: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_tools_directory_exists(self, sandbox):
         """Test that tools directory exists in sandbox."""
         work_dir = getattr(sandbox, "_work_dir", "/home/daytona")
@@ -280,7 +280,7 @@ class TestSandboxDirectoryStructure:
 class TestGeneratedToolModules:
     """Tests for generated tool Python modules."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_mcp_client_module_exists(self, sandbox):
         """Test that mcp_client.py is generated."""
         work_dir = getattr(sandbox, "_work_dir", "/home/daytona")
@@ -296,7 +296,7 @@ class TestGeneratedToolModules:
         except Exception as e:
             pytest.skip(f"Could not read mcp_client.py: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_server_modules_exist(self, sandbox, mcp_registry):
         """Test that a Python module is generated for each MCP server."""
         work_dir = getattr(sandbox, "_work_dir", "/home/daytona")
@@ -321,7 +321,7 @@ class TestGeneratedToolModules:
 class TestToolImport:
     """Tests for importing generated tools in sandbox."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_can_import_tool_in_sandbox(self, sandbox, mcp_registry):
         """Test that generated tools can be imported in sandbox."""
         tools_by_server = mcp_registry.get_all_tools()
@@ -366,7 +366,7 @@ except Exception as e:
         except Exception as e:
             pytest.skip(f"Could not execute import test: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_imported_tool_has_docstring(self, sandbox, mcp_registry):
         """Test that imported tools have docstrings."""
         tools_by_server = mcp_registry.get_all_tools()
@@ -422,7 +422,7 @@ except Exception as e:
 class TestToolDocumentation:
     """Tests for generated tool documentation."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_docs_directory_exists(self, sandbox):
         """Test that documentation directory exists."""
         work_dir = getattr(sandbox, "_work_dir", "/home/daytona")

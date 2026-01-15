@@ -119,7 +119,7 @@ async def measure_tool_call(tool, params: dict) -> tuple[str, float]:
 class TestToolDiscovery:
     """Scenario: Find all Python files in the tools directory."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_finds_python_files(self, glob_tool):
         """Test Glob can find Python files in tools directory."""
         result, _ = await measure_tool_call(
@@ -130,7 +130,7 @@ class TestToolDiscovery:
         files_found = result.count(".py")
         assert files_found >= 3, f"Expected at least 3 .py files, found {files_found}"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_finds_function_definitions(self, grep_tool):
         """Test Grep can find function definitions in Python files."""
         result, _ = await measure_tool_call(
@@ -141,7 +141,7 @@ class TestToolDiscovery:
         # Should find at least some function definitions
         assert len(result) > 0 or ":" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_bash_lists_python_files(self, bash_tool):
         """Test Bash ls command can list Python files."""
         result, _ = await measure_tool_call(
@@ -162,7 +162,7 @@ class TestToolDiscovery:
 class TestDocumentationLookup:
     """Scenario: Find documentation for tools."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_finds_markdown_docs(self, glob_tool):
         """Test Glob can find markdown documentation files."""
         result, _ = await measure_tool_call(
@@ -173,7 +173,7 @@ class TestDocumentationLookup:
         # May have 0 if tools/docs doesn't exist - that's acceptable
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_searches_doc_content(self, grep_tool):
         """Test Grep can search content in documentation."""
         result, _ = await measure_tool_call(
@@ -184,7 +184,7 @@ class TestDocumentationLookup:
         # Result format varies based on whether files exist
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_bash_lists_docs(self, bash_tool):
         """Test Bash can list documentation files."""
         result, _ = await measure_tool_call(
@@ -204,7 +204,7 @@ class TestDocumentationLookup:
 class TestParameterSearch:
     """Scenario: Find all tools that accept a specific parameter."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_finds_parameter_usage(self, grep_tool):
         """Test Grep can find parameter usage in code."""
         result, _ = await measure_tool_call(
@@ -215,7 +215,7 @@ class TestParameterSearch:
         # May or may not find 'symbol' depending on tool implementations
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_bash_grep_finds_parameters(self, bash_tool):
         """Test Bash grep command can find parameters."""
         result, _ = await measure_tool_call(
@@ -235,7 +235,7 @@ class TestParameterSearch:
 class TestContentSearch:
     """Scenario: Find specific content in documentation."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_finds_returns_sections(self, grep_tool):
         """Test Grep can find Returns sections in documentation."""
         result, _ = await measure_tool_call(
@@ -245,7 +245,7 @@ class TestContentSearch:
 
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_bash_grep_with_context(self, bash_tool):
         """Test Bash grep can search with context lines."""
         result, _ = await measure_tool_call(
@@ -265,7 +265,7 @@ class TestContentSearch:
 class TestPatternMatching:
     """Scenario: Complex pattern matching to find specific file types."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_recursive_pattern(self, glob_tool):
         """Test Glob with recursive ** pattern."""
         result, _ = await measure_tool_call(
@@ -279,7 +279,7 @@ class TestPatternMatching:
             files_found = result.count("\n")
             assert files_found >= 0
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_glob_simple_pattern(self, glob_tool):
         """Test Glob with simple * pattern."""
         result, _ = await measure_tool_call(
@@ -290,7 +290,7 @@ class TestPatternMatching:
         files_found = result.count(".py")
         assert files_found >= 1, "Should find at least one Python file"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_grep_regex_pattern(self, grep_tool):
         """Test Grep with regex pattern."""
         result, _ = await measure_tool_call(
@@ -300,7 +300,7 @@ class TestPatternMatching:
 
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_bash_find_command(self, bash_tool):
         """Test Bash find command."""
         result, _ = await measure_tool_call(
@@ -321,7 +321,7 @@ class TestPatternMatching:
 class TestToolPerformanceComparison:
     """Compare performance of different tools for similar tasks."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_file_listing_performance(self, glob_tool, bash_tool):
         """Compare Glob vs Bash for file listing."""
         # Glob

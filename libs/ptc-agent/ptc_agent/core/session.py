@@ -54,9 +54,7 @@ class Session:
             # RECONNECT MODE: Run MCP connections and sandbox start in parallel
 
             # Create sandbox instance without mcp_registry
-            self.sandbox = await asyncio.to_thread(
-                PTCSandbox, self.config, None
-            )
+            self.sandbox = PTCSandbox(self.config, None)
 
             # Run both operations in parallel
             await asyncio.gather(
@@ -73,9 +71,7 @@ class Session:
             )
         else:
             # NEW SANDBOX MODE: Run workspace setup and MCP connect concurrently
-            self.sandbox = await asyncio.to_thread(
-                PTCSandbox, self.config, None
-            )
+            self.sandbox = PTCSandbox(self.config, None)
 
             snapshot_name, _ = await asyncio.gather(
                 self.sandbox.setup_sandbox_workspace(),
