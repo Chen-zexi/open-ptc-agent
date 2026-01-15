@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 import termios
 import tty
@@ -203,13 +204,21 @@ async def _handle_view_command(session: _SessionManager | None, path: str) -> No
         console.print("[yellow]No active sandbox session[/yellow]")
         return
 
+    path_lower = path.lower()
+
     # Check if image file - auto-download instead of terminal rendering
     image_extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
-    if path.lower().endswith(image_extensions):
+    if path_lower.endswith(image_extensions):
 
         async def _download_image() -> bytes | None:
             sandbox = await session.get_sandbox()
             sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
+
+            async_method = getattr(sandbox, "download_file_bytes_async", None)
+            if callable(async_method):
+                maybe = async_method(sandbox_path)
+                if inspect.isawaitable(maybe):
+                    return await maybe
             return sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
 
         try:
@@ -222,27 +231,55 @@ async def _handle_view_command(session: _SessionManager | None, path: str) -> No
             console.print(f"[green]Image downloaded to: {local_path}[/green]")
         else:
             console.print(f"[red]Failed to download image: {path}[/red]")
-    else:
-        # Text file - use Rich Syntax highlighting
-        async def _read_file() -> str | None:
-            sandbox = await session.get_sandbox()
-            sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
-            return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+    # Common binary files should not be rendered as text in terminal.
+    binary_view_extensions = (
+        ".pdf",
+        ".docx",
+        ".docm",
+        ".doc",
+        ".pptx",
+        ".pptm",
+        ".ppt",
+        ".xlsx",
+        ".xlsm",
+        ".xls",
+        ".zip",
+        ".tar",
+        ".gz",
+    )
+    if path_lower.endswith(binary_view_extensions):
+        console.print(f"[yellow]Binary file can't be displayed in terminal: {path}[/yellow]")
+        console.print(f"[dim]Use /download {path} [local_path][/dim]")
+        return
 
-        try:
-            content = await _execute_with_recovery(session, "reading file", _read_file)
-        except SandboxRecoveryError:
-            return
-        if content is None:
-            console.print(f"[red]File not found: {path}[/red]")
-        else:
-            from rich.syntax import Syntax
+    # Text file - use Rich Syntax highlighting
+    async def _read_file() -> str | None:
+        sandbox = await session.get_sandbox()
+        sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
 
-            ext = Path(path).suffix.lstrip(".") or "text"
-            syntax = Syntax(content, ext, theme=get_syntax_theme(), line_numbers=True)
-            console.print()
-            console.print(syntax)
-            console.print()
+        async_method = getattr(sandbox, "read_file_text_async", None)
+        if callable(async_method):
+            maybe = async_method(sandbox_path)
+            if inspect.isawaitable(maybe):
+                return await maybe
+        return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+
+    try:
+        content = await _execute_with_recovery(session, "reading file", _read_file)
+    except SandboxRecoveryError:
+        return
+
+    if content is None:
+        console.print(f"[red]File not found: {path}[/red]")
+        return
+
+    from rich.syntax import Syntax
+
+    ext = Path(path).suffix.lstrip(".") or "text"
+    syntax = Syntax(content, ext, theme=get_syntax_theme(), line_numbers=True)
+    console.print()
+    console.print(syntax)
+    console.print()
 
 
 async def _handle_copy_command(session: _SessionManager | None, path: str) -> None:
@@ -263,6 +300,12 @@ async def _handle_copy_command(session: _SessionManager | None, path: str) -> No
     async def _read_file() -> str | None:
         sandbox = await session.get_sandbox()
         sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
+
+        async_method = getattr(sandbox, "read_file_text_async", None)
+        if callable(async_method):
+            maybe = async_method(sandbox_path)
+            if inspect.isawaitable(maybe):
+                return await maybe
         return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
 
     try:
@@ -536,6 +579,15 @@ async def _handle_download_command(
         ".webp",
         ".bmp",
         ".pdf",
+        ".docx",
+        ".docm",
+        ".doc",
+        ".pptx",
+        ".pptm",
+        ".ppt",
+        ".xlsx",
+        ".xlsm",
+        ".xls",
         ".zip",
         ".tar",
         ".gz",
@@ -546,6 +598,12 @@ async def _handle_download_command(
             async def _download_binary() -> bytes | None:
                 sandbox = await session.get_sandbox()
                 sandbox_path = sandbox.normalize_path(user_path)  # type: ignore[union-attr]
+
+                async_method = getattr(sandbox, "download_file_bytes_async", None)
+                if callable(async_method):
+                    maybe = async_method(sandbox_path)
+                    if inspect.isawaitable(maybe):
+                        return await maybe
                 return sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
 
             binary_content = await _execute_with_recovery(session, "downloading file", _download_binary)
@@ -559,6 +617,12 @@ async def _handle_download_command(
             async def _download_text() -> str | None:
                 sandbox = await session.get_sandbox()
                 sandbox_path = sandbox.normalize_path(user_path)  # type: ignore[union-attr]
+
+                async_method = getattr(sandbox, "read_file_text_async", None)
+                if callable(async_method):
+                    maybe = async_method(sandbox_path)
+                    if inspect.isawaitable(maybe):
+                        return await maybe
                 return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
 
             text_content = await _execute_with_recovery(session, "downloading file", _download_text)

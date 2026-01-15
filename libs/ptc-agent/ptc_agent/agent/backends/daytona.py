@@ -5,8 +5,10 @@ enabling deepagent's built-in tools to work with Daytona sandboxes.
 """
 
 
+import asyncio
+
 import structlog
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, FileDownloadResponse, FileUploadResponse, WriteResult
 
 from ptc_agent.core.sandbox import PTCSandbox
 
@@ -96,9 +98,21 @@ class DaytonaBackend:
                     # If entry is a string, treat as path
                     result.append({"path": str(entry)})
             return result
-        except (OSError, ValueError):
-            logger.exception(f"Failed to list directory {path}")
+        except (OSError, FileNotFoundError, PermissionError, ValueError) as e:
+            # Return empty list if directory doesn't exist or is inaccessible.
+            # This is expected for skills directories that haven't been created yet.
+            logger.debug("ls_info failed", path=path, error=str(e))
             return []
+        except Exception:
+            logger.exception("Unexpected error in ls_info", path=path)
+            return []
+
+    async def als_info(self, path: str = ".") -> list[dict]:
+        """Async version of ls_info.
+
+        Required by BackendProtocol for SkillsMiddleware.
+        """
+        return await asyncio.to_thread(self.ls_info, path)
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
         """Read file content with optional range.
@@ -124,6 +138,10 @@ class DaytonaBackend:
         except (OSError, FileNotFoundError, PermissionError):
             logger.exception(f"Failed to read file {file_path}")
             return f"Error: File '{file_path}' not found"
+
+    async def aread(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+        """Async version of read."""
+        return await asyncio.to_thread(self.read, file_path, offset, limit)
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Write content to file.
@@ -181,6 +199,17 @@ class DaytonaBackend:
         except (OSError, FileNotFoundError, PermissionError, ValueError) as e:
             logger.exception(f"Failed to edit file {file_path}")
             return EditResult(error=str(e))
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Async version of edit."""
+        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all=replace_all)
 
     def grep_raw(
         self,
@@ -367,3 +396,67 @@ class DaytonaBackend:
         if self.sandbox.sandbox:
             return self.sandbox.sandbox.get_work_dir()
         return "/workspace"
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from sandbox.
+
+        Required by BackendProtocol for SkillsMiddleware.
+
+        Args:
+            paths: List of file paths to download
+
+        Returns:
+            List of FileDownloadResponse objects with content or error
+        """
+        responses = []
+        for path in paths:
+            try:
+                normalized = self._normalize_path(path)
+                content = self.sandbox.download_file_bytes(normalized)
+                if content is not None:
+                    responses.append(FileDownloadResponse(path=path, content=content))
+                else:
+                    responses.append(FileDownloadResponse(path=path, error="file_not_found"))
+            except Exception:
+                logger.exception(f"Failed to download file {path}")
+                responses.append(FileDownloadResponse(path=path, error="file_not_found"))
+        return responses
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Async version of download_files.
+
+        Required by BackendProtocol for SkillsMiddleware.
+        """
+        return await asyncio.to_thread(self.download_files, paths)
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Async version of upload_files.
+
+        Required by BackendProtocol for SkillsMiddleware.
+        """
+        return await asyncio.to_thread(self.upload_files, files)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to sandbox.
+
+        Required by BackendProtocol for SkillsMiddleware.
+
+        Args:
+            files: List of (path, content) tuples to upload
+
+        Returns:
+            List of FileUploadResponse objects with success or error
+        """
+        responses = []
+        for path, content in files:
+            try:
+                normalized = self._normalize_path(path)
+                success = self.sandbox.upload_file_bytes(normalized, content)
+                if success:
+                    responses.append(FileUploadResponse(path=path))
+                else:
+                    responses.append(FileUploadResponse(path=path, error="permission_denied"))
+            except Exception:
+                logger.exception(f"Failed to upload file {path}")
+                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+        return responses

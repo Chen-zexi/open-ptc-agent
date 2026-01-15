@@ -27,7 +27,7 @@ from typing import Any
 
 import aiofiles
 
-from ptc_agent.config.agent import AgentConfig, LLMConfig, LLMDefinition
+from ptc_agent.config.agent import AgentConfig, LLMConfig, LLMDefinition, SkillsConfig
 from ptc_agent.config.core import CoreConfig
 from ptc_agent.config.utils import (
     configure_logging,
@@ -435,6 +435,15 @@ def load_from_dict(
     subagents_data = config_data.get("subagents", {})
     subagents_enabled = subagents_data.get("enabled", ["general-purpose"])
 
+    # Load Skills configuration (optional section)
+    skills_data = config_data.get("skills", {})
+    skills_config = SkillsConfig(
+        enabled=skills_data.get("enabled", True),
+        user_skills_dir=skills_data.get("user_skills_dir", "~/.ptc-agent/skills"),
+        project_skills_dir=skills_data.get("project_skills_dir", ".ptc-agent/skills"),
+        sandbox_skills_base=skills_data.get("sandbox_skills_base", "/home/daytona/skills"),
+    )
+
     # Create config object
     config = AgentConfig(
         llm=llm_config,
@@ -443,6 +452,7 @@ def load_from_dict(
         daytona=daytona_config,
         mcp=mcp_config,
         filesystem=filesystem_config,
+        skills=skills_config,
         use_custom_filesystem_tools=use_custom_filesystem_tools,
         enable_view_image=enable_view_image,
         subagents_enabled=subagents_enabled,

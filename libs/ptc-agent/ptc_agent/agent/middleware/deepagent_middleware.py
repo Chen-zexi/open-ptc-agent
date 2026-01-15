@@ -32,6 +32,7 @@ def create_deepagent_middleware(
     tools: list[Any],
     subagents: list[Any],
     backend: Any,
+    skill_sources: list[str] | None = None,
     custom_middleware: list[Any] | None = None,
     max_tokens_before_summary: int = 170000,
     messages_to_keep: int = 6,
@@ -46,6 +47,7 @@ def create_deepagent_middleware(
         tools: List of tools for the agent
         subagents: List of subagent configurations
         backend: DaytonaBackend instance for FilesystemMiddleware
+        skill_sources: List of sandbox paths to skill directories (e.g., ["/home/daytona/skills/user"])
         custom_middleware: Additional middleware to append (e.g., ViewImageMiddleware)
         max_tokens_before_summary: Token threshold for summarization (default: 170000)
         messages_to_keep: Messages to preserve during summarization (default: 6)
@@ -53,8 +55,18 @@ def create_deepagent_middleware(
     Returns:
         Complete middleware list for create_agent()
     """
+    skills_middleware: list[Any] = []
+    if skill_sources:
+        try:
+            from deepagents.middleware.skills import SkillsMiddleware as _SkillsMiddleware
+        except ImportError as e:
+            raise RuntimeError("Skills are enabled but SkillsMiddleware is unavailable") from e
+
+        skills_middleware = [_SkillsMiddleware(backend=backend, sources=skill_sources)]
+
     middleware = [
         TodoListMiddleware(),
+        *skills_middleware,
         FilesystemMiddleware(backend=backend),
         SubAgentMiddleware(
             default_model=model,
@@ -64,6 +76,7 @@ def create_deepagent_middleware(
             system_prompt=None,  # Disable verbose TASK_SYSTEM_PROMPT injection
             default_middleware=[
                 TodoListMiddleware(),
+                *skills_middleware,
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
                     model=model,

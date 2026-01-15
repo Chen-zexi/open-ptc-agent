@@ -1,6 +1,7 @@
 """File operation tools: read, write, edit."""
 
 import asyncio
+import inspect
 from typing import Any
 
 import structlog
@@ -44,9 +45,25 @@ def create_filesystem_tools(sandbox: Any) -> tuple:
 
             # Read file content with optional offset/limit using normalized path
             if offset is not None or limit is not None:
-                content = await asyncio.to_thread(sandbox.read_file_range, normalized_path, offset or 1, limit or 2000)
+                method = getattr(sandbox, "read_file_range_async", None)
+                if callable(method):
+                    maybe = method(normalized_path, offset or 1, limit or 2000)
+                    if inspect.isawaitable(maybe):
+                        content = await maybe
+                    else:
+                        content = await asyncio.to_thread(sandbox.read_file_range, normalized_path, offset or 1, limit or 2000)
+                else:
+                    content = await asyncio.to_thread(sandbox.read_file_range, normalized_path, offset or 1, limit or 2000)
             else:
-                content = await asyncio.to_thread(sandbox.read_file, normalized_path)
+                method = getattr(sandbox, "read_file_text_async", None)
+                if callable(method):
+                    maybe = method(normalized_path)
+                    if inspect.isawaitable(maybe):
+                        content = await maybe
+                    else:
+                        content = await asyncio.to_thread(sandbox.read_file, normalized_path)
+                else:
+                    content = await asyncio.to_thread(sandbox.read_file, normalized_path)
 
             if content is None:
                 error_msg = f"File not found: {file_path}"
@@ -105,7 +122,15 @@ def create_filesystem_tools(sandbox: Any) -> tuple:
                 return f"ERROR: {error_msg}"
 
             # Write file using normalized path
-            success = await asyncio.to_thread(sandbox.write_file, normalized_path, content)
+            method = getattr(sandbox, "write_file_text_async", None)
+            if callable(method):
+                maybe = method(normalized_path, content)
+                if inspect.isawaitable(maybe):
+                    success = await maybe
+                else:
+                    success = await asyncio.to_thread(sandbox.write_file, normalized_path, content)
+            else:
+                success = await asyncio.to_thread(sandbox.write_file, normalized_path, content)
 
             if success:
                 bytes_written = len(content.encode("utf-8"))
@@ -161,7 +186,15 @@ def create_filesystem_tools(sandbox: Any) -> tuple:
                 return f"ERROR: {error_msg}"
 
             # Edit file using normalized path
-            result = await asyncio.to_thread(sandbox.edit_file, normalized_path, old_string, new_string, replace_all)
+            method = getattr(sandbox, "edit_file_text_async", None)
+            if callable(method):
+                maybe = method(normalized_path, old_string, new_string, replace_all=replace_all)
+                if inspect.isawaitable(maybe):
+                    result = await maybe
+                else:
+                    result = await asyncio.to_thread(sandbox.edit_file, normalized_path, old_string, new_string, replace_all)
+            else:
+                result = await asyncio.to_thread(sandbox.edit_file, normalized_path, old_string, new_string, replace_all)
 
             if not result.get("success", False):
                 error_msg = result.get("error", "Edit operation failed")

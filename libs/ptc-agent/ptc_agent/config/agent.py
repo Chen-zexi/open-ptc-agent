@@ -26,6 +26,34 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 
+class SkillsConfig(BaseModel):
+    """Skills configuration for agent capabilities.
+
+    Skills are markdown-based instruction files that extend agent capabilities.
+    Each skill is a directory containing a SKILL.md file with YAML frontmatter.
+
+    Resolution and precedence:
+    - Skills are sourced from both user and project directories.
+    - Project skills override user skills when names conflict.
+    """
+
+    enabled: bool = True
+    user_skills_dir: str = "~/.ptc-agent/skills"
+    project_skills_dir: str = ".ptc-agent/skills"
+    sandbox_skills_base: str = "/home/daytona/skills"  # Where skills live in sandbox
+
+    def local_skill_dirs_with_sandbox(self, *, cwd: Path | None = None) -> list[tuple[str, str]]:
+        """Return ordered (local_dir, sandbox_dir) sources.
+
+        Project skills are listed last so they override user skills.
+        """
+        base = cwd or Path.cwd()
+        return [
+            (str(Path(self.user_skills_dir).expanduser()), self.sandbox_skills_base),
+            (str((base / self.project_skills_dir).resolve()), self.sandbox_skills_base),
+        ]
+
+
 class LLMDefinition(BaseModel):
     """Definition of an LLM from llms.json catalog."""
 
@@ -61,6 +89,9 @@ class AgentConfig(BaseModel):
     daytona: DaytonaConfig
     mcp: MCPConfig
     filesystem: FilesystemConfig
+
+    # Skills configuration
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
     # Tool configuration
     # If True, use custom filesystem tools (Read, Write, Edit, Glob, Grep)
@@ -212,6 +243,14 @@ class AgentConfig(BaseModel):
             enable_path_validation=kwargs.pop("enable_path_validation", True),
         )
 
+        # Create Skills config
+        skills_config = SkillsConfig(
+            enabled=kwargs.pop("skills_enabled", True),
+            user_skills_dir=kwargs.pop("user_skills_dir", "~/.ptc-agent/skills"),
+            project_skills_dir=kwargs.pop("project_skills_dir", ".ptc-agent/skills"),
+            sandbox_skills_base=kwargs.pop("sandbox_skills_base", "/home/daytona/skills"),
+        )
+
         # Create the config
         config = cls(
             llm=llm_config,
@@ -220,6 +259,7 @@ class AgentConfig(BaseModel):
             mcp=mcp_config,
             logging=logging_config,
             filesystem=filesystem_config,
+            skills=skills_config,
             use_custom_filesystem_tools=kwargs.pop("use_custom_filesystem_tools", True),
             enable_view_image=kwargs.pop("enable_view_image", True),
             subagents_enabled=kwargs.pop("subagents_enabled", ["general-purpose"]),

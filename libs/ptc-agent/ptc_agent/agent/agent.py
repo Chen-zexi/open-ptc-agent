@@ -345,11 +345,18 @@ class PTCAgent:
         # Store native tools info for introspection (used by print_agent_config)
         self.native_tools = [t.name if hasattr(t, "name") else str(t) for t in tools]
 
+        # Build skill sources from config (sandbox paths where skills were uploaded)
+        skill_sources: list[str] | None = None
+        if self.config.skills.enabled:
+            # Single skills directory - both user and project skills uploaded here
+            skill_sources = [f"{self.config.skills.sandbox_skills_base}/"]
+
         logger.info(
             "Creating agent with custom middleware stack",
             tool_count=len(tools),
             subagent_count=len(subagents),
             use_custom_filesystem_tools=self.config.use_custom_filesystem_tools,
+            skills_enabled=self.config.skills.enabled,
         )
 
         # Build middleware inherited from deepagent
@@ -358,6 +365,7 @@ class PTCAgent:
             tools=tools,
             subagents=subagents,
             backend=backend,
+            skill_sources=skill_sources,
             custom_middleware=middleware_list,
         )
 

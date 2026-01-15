@@ -141,6 +141,12 @@ def mock_sandbox():
     sandbox.normalize_path = Mock(side_effect=lambda x: f"/home/daytona/{x}")
     sandbox.read_file = Mock(return_value=None)
     sandbox.download_file_bytes = Mock(return_value=None)
+
+    # New async helpers are used by slash commands and agent tools.
+    # Wire them to existing sync mocks so tests can keep setting return_value.
+    sandbox.read_file_text_async = AsyncMock(side_effect=lambda p: sandbox.read_file(p))
+    sandbox.download_file_bytes_async = AsyncMock(side_effect=lambda p: sandbox.download_file_bytes(p))
+
     return sandbox
 
 

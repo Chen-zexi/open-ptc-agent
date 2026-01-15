@@ -4,10 +4,12 @@ import asyncio
 import base64
 import hashlib
 import json
+import shlex
 import textwrap
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from types import TracebackType
@@ -28,6 +30,19 @@ from .mcp_registry import MCPRegistry
 from .tool_generator import ToolFunctionGenerator
 
 logger = structlog.get_logger(__name__)
+
+
+class SandboxTransientError(RuntimeError):
+    """Transient sandbox transport error.
+
+    Raised when an operation fails due to transient transport issues and cannot be
+    safely retried automatically.
+    """
+
+
+class _DaytonaRetryPolicy(Enum):
+    SAFE = "safe"
+    UNSAFE = "unsafe"
 
 
 @dataclass
@@ -57,6 +72,8 @@ class ExecutionResult:
 
 class PTCSandbox:
     """Manages Daytona sandbox for Programmatic Tool Calling (PTC) execution."""
+
+    SNAPSHOT_PYTHON_VERSION = "3.12"  # Intentionally pinned for stability/compatibility.
 
     # Default Python dependencies installed in sandbox
     DEFAULT_DEPENDENCIES = [
@@ -100,6 +117,9 @@ class PTCSandbox:
         self.execution_count = 0
         self.bash_execution_count = 0
 
+        self._reconnect_lock = asyncio.Lock()
+        self._reconnect_inflight: asyncio.Future[None] | None = None
+
         logger.info("Initialized PTCSandbox")
 
     async def _run_sync(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -115,7 +135,7 @@ class PTCSandbox:
         Returns:
             The result of the function call
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         if kwargs:
             func_with_kwargs = partial(func, *args, **kwargs)
             return await loop.run_in_executor(None, func_with_kwargs)
@@ -171,8 +191,16 @@ class PTCSandbox:
 
         # Build image using declarative builder
         # Note: Directories are created in _setup_workspace(), not in snapshot
+        if self.config.daytona.python_version != self.SNAPSHOT_PYTHON_VERSION:
+            logger.debug(
+                "Ignoring configured python version for snapshots",
+                configured=self.config.daytona.python_version,
+                pinned=self.SNAPSHOT_PYTHON_VERSION,
+            )
+        base_image = Image.debian_slim(self.SNAPSHOT_PYTHON_VERSION)
+
         image = (
-            Image.debian_slim(self.config.daytona.python_version)
+            base_image
             .run_commands(
                 # Install system dependencies including ripgrep for fast search
                 "apt-get update",
@@ -187,7 +215,7 @@ class PTCSandbox:
                 *[f"npm install -g {pkg}" for pkg in mcp_packages],
                 # Clean up apt cache to reduce image size
                 "apt-get clean",
-                "rm -rf /var/lib/apt/lists/*"
+                "rm -rf /var/lib/apt/lists/*",
             )
             .pip_install(*dependencies)  # Unpack list as individual arguments
             .workdir("/home/daytona")
@@ -195,7 +223,7 @@ class PTCSandbox:
 
         logger.info(
             "Created snapshot image definition",
-            python_version=self.config.daytona.python_version,
+            python_version=self.SNAPSHOT_PYTHON_VERSION,
             dependencies=dependencies,
             mcp_packages=mcp_packages,
         )
@@ -213,7 +241,7 @@ class PTCSandbox:
 
         # Include configuration that affects the snapshot in the hash
         config_data = {
-            "python_version": self.config.daytona.python_version,
+            "python_version": self.SNAPSHOT_PYTHON_VERSION,
             "dependencies": self.DEFAULT_DEPENDENCIES,
             "mcp_packages": sorted(mcp_packages),  # Include MCP packages in hash
             "apt_packages": ["curl", "nodejs", "ripgrep", "uv", "jq", "git", "unzip"],  # Include apt/curl-installed packages in hash
@@ -350,8 +378,10 @@ class PTCSandbox:
             # Fallback to default creation
             logger.info("Creating sandbox from default image")
             self.sandbox = await self._run_sync(self.daytona_client.create)
+            assert self.sandbox is not None
 
-            self.sandbox_id = self.sandbox.id if hasattr(self.sandbox, "id") else str(id(self.sandbox))
+            sandbox = self.sandbox
+            self.sandbox_id = sandbox.id if hasattr(sandbox, "id") else str(id(sandbox))
             logger.info("Daytona sandbox created", sandbox_id=self.sandbox_id)
 
             # Set up workspace structure
@@ -362,7 +392,8 @@ class PTCSandbox:
         else:
             # Snapshot-based creation
             assert self.sandbox is not None
-            self.sandbox_id = self.sandbox.id if hasattr(self.sandbox, "id") else str(id(self.sandbox))
+            sandbox = self.sandbox
+            self.sandbox_id = sandbox.id if hasattr(sandbox, "id") else str(id(sandbox))
             logger.info(
                 "Sandbox ready from snapshot",
                 sandbox_id=self.sandbox_id,
@@ -429,24 +460,26 @@ class PTCSandbox:
 
         # Get the existing sandbox from Daytona with error handling
         try:
-            self.sandbox = await self._run_sync(self.daytona_client.get, sandbox_id)
+            self.sandbox = await self._run_sync_with_retries(self.daytona_client.get, sandbox_id)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to find sandbox {sandbox_id}. It may have been deleted. "
                 f"Original error: {e}"
             ) from e
 
+        assert self.sandbox is not None
+        sandbox = self.sandbox
         self.sandbox_id = sandbox_id
 
         # Check sandbox state before attempting to start
-        state = getattr(self.sandbox, "state", None)
+        state = getattr(sandbox, "state", None)
         if state:
             state_value = state.value if hasattr(state, "value") else str(state)
             if state_value == "started":
                 logger.info("Sandbox already started, skipping start", sandbox_id=sandbox_id)
             elif state_value in ("stopped", "starting"):
                 logger.info("Starting stopped sandbox", sandbox_id=sandbox_id, state=state_value)
-                await self._run_sync(self.sandbox.start, timeout=60)
+                await self._run_sync_with_retries(sandbox.start, timeout=60)
             else:
                 raise RuntimeError(
                     f"Cannot reconnect to sandbox in state: {state_value}. "
@@ -455,10 +488,10 @@ class PTCSandbox:
         else:
             # No state attribute, assume we need to start
             logger.info("Starting sandbox (state unknown)", sandbox_id=sandbox_id)
-            await self._run_sync(self.sandbox.start, timeout=60)
+            await self._run_sync_with_retries(sandbox.start, timeout=60)
 
         # Get work directory reference
-        self._work_dir = await self._run_sync(self.sandbox.get_work_dir)
+        self._work_dir = await self._run_sync_with_retries(sandbox.get_work_dir)
         logger.info(f"Sandbox working directory: {self._work_dir}")
 
         # SKIP: _setup_workspace() - directories already exist
@@ -627,6 +660,355 @@ class PTCSandbox:
                 upload_file(server_name, local_path, sandbox_path)
                 for server_name, local_path, sandbox_path in files_to_upload
             ])
+
+    SKILLS_MANIFEST_FILENAME = ".skills_manifest.json"
+
+    async def compute_skills_manifest(self, local_skill_roots: list[str]) -> dict[str, Any]:
+        """Compute a cheap manifest for skills contents.
+
+        Used to detect changes and avoid re-uploading skills on every startup.
+
+        Args:
+            local_skill_roots: List of local directories to scan, in priority order.
+                Later directories override earlier ones.
+
+        Returns:
+            Manifest dict with "version" and "files".
+        """
+        return await self._compute_skills_manifest(local_skill_roots)
+
+    def _is_transient_daytona_error(self, e: Exception) -> bool:
+        message = str(e).lower()
+        transient_markers = (
+            "remote end closed connection",
+            "remotedisconnected",
+            "connection aborted",
+            "connection reset",
+            "broken pipe",
+            "timed out",
+            "timeout",
+            "service unavailable",
+            "502",
+            "503",
+            "504",
+        )
+        return any(marker in message for marker in transient_markers)
+
+    async def _ensure_sandbox_connected(self) -> None:
+        if self.sandbox_id is None:
+            raise SandboxTransientError("Sandbox disconnected and no sandbox_id is available")
+
+        # Coalesce concurrent reconnect attempts.
+        async with self._reconnect_lock:
+            if self._reconnect_inflight is not None and not self._reconnect_inflight.done():
+                await self._reconnect_inflight
+                return
+
+            loop = asyncio.get_running_loop()
+            self._reconnect_inflight = loop.create_future()
+            inflight = self._reconnect_inflight
+
+            try:
+                await self.reconnect(self.sandbox_id)
+                inflight.set_result(None)
+            except Exception as e:
+                inflight.set_exception(e)
+                raise
+            finally:
+                self._reconnect_inflight = None
+
+    async def _daytona_call(
+        self,
+        func: Callable[..., Any],
+        *args: Any,
+        retry_policy: _DaytonaRetryPolicy,
+        allow_reconnect: bool = True,
+        retries: int = 5,
+        initial_delay_s: float = 0.25,
+        **kwargs: Any,
+    ) -> Any:
+        delay_s = initial_delay_s
+        reconnected = False
+
+        for attempt in range(1, retries + 1):
+            try:
+                return await self._run_sync(func, *args, **kwargs)
+            except Exception as e:
+                if not self._is_transient_daytona_error(e):
+                    raise
+
+                if allow_reconnect and not reconnected:
+                    try:
+                        await self._ensure_sandbox_connected()
+                        reconnected = True
+                    except Exception as reconnect_error:
+                        logger.debug(
+                            "Reconnect attempt failed during retry",
+                            error=str(reconnect_error),
+                        )
+
+                if retry_policy == _DaytonaRetryPolicy.UNSAFE:
+                    logger.warning(
+                        "Sandbox disconnected during unsafe operation; not retrying automatically",
+                        func=getattr(func, "__name__", str(func)),
+                        attempt=attempt,
+                        error=str(e),
+                    )
+                    message = (
+                        "Sandbox disconnected during command execution; sandbox reconnected. Please retry."
+                        if reconnected
+                        else "Sandbox disconnected during command execution; please retry after recovery."
+                    )
+                    raise SandboxTransientError(message) from e
+
+                if attempt == retries:
+                    raise SandboxTransientError(
+                        "Transient sandbox transport error; operation failed after retries"
+                    ) from e
+
+                logger.debug(
+                    "Retrying Daytona SDK call after transient error",
+                    func=getattr(func, "__name__", str(func)),
+                    attempt=attempt,
+                    error=str(e),
+                )
+                await asyncio.sleep(delay_s)
+                delay_s *= 2
+
+        raise SandboxTransientError("Transient sandbox transport error")
+
+    async def _run_sync_with_retries(
+        self,
+        func: Callable[..., Any],
+        *args: Any,
+        retries: int = 5,
+        initial_delay_s: float = 0.25,
+        **kwargs: Any,
+    ) -> Any:
+        return await self._daytona_call(
+            func,
+            *args,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+            allow_reconnect=False,
+            retries=retries,
+            initial_delay_s=initial_delay_s,
+            **kwargs,
+        )
+
+    async def _compute_skills_manifest(self, local_skill_roots: list[str]) -> dict[str, Any]:
+        def build() -> dict[str, Any]:
+            files: dict[str, dict[str, int]] = {}
+            seen_skill_names: set[str] = set()
+
+            for root_str in local_skill_roots:
+                root = Path(root_str).expanduser()
+                if not root.exists():
+                    continue
+
+                for skill_dir in root.iterdir():
+                    if not skill_dir.is_dir():
+                        continue
+
+                    if not (skill_dir / "SKILL.md").exists():
+                        continue
+
+                    # Later sources override earlier ones; mirror the sandbox upload behavior
+                    # by clearing all files from the overridden skill directory.
+                    skill_name = skill_dir.name
+                    if skill_name in seen_skill_names:
+                        prefix = f"{skill_name}/"
+                        for key in list(files.keys()):
+                            if key.startswith(prefix):
+                                del files[key]
+                    else:
+                        seen_skill_names.add(skill_name)
+
+                    for file_path in skill_dir.iterdir():
+                        if not file_path.is_file():
+                            continue
+
+                        rel_path = f"{skill_dir.name}/{file_path.name}"
+                        stat = file_path.stat()
+                        files[rel_path] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+            payload = "\n".join(f"{p}:{meta['size']}:{meta['mtime_ns']}" for p, meta in sorted(files.items()))
+            version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            return {"version": version, "files": files}
+
+        return await asyncio.to_thread(build)
+
+    async def sync_skills(
+        self,
+        local_skills_dirs: list[tuple[str, str]],
+        *,
+        reusing_sandbox: bool,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Ensure skills are present in the sandbox.
+
+        Computes a local manifest and compares it to the sandbox manifest.
+        Uploads only when the sandbox is new or the manifest version differs.
+
+        Args:
+            local_skills_dirs: Ordered list of (local_path, sandbox_path) sources.
+                Later entries override earlier ones.
+            reusing_sandbox: Whether we reconnected to an existing sandbox.
+            on_progress: Optional callback for reporting progress.
+
+        Returns:
+            True if an upload occurred.
+        """
+        local_roots = [local_dir for local_dir, _ in local_skills_dirs]
+        local_manifest = await self._compute_skills_manifest(local_roots)
+
+        if not local_manifest.get("files"):
+            return False
+
+        sandbox_base = local_skills_dirs[-1][1].rstrip("/")
+        manifest_path = f"{sandbox_base}/{self.SKILLS_MANIFEST_FILENAME}"
+
+        remote_manifest_text = await self.read_file_text_async(manifest_path)
+        remote_manifest: dict[str, Any] | None = None
+        if remote_manifest_text:
+            try:
+                parsed = json.loads(remote_manifest_text)
+                if isinstance(parsed, dict):
+                    remote_manifest = parsed
+            except json.JSONDecodeError:
+                remote_manifest = None
+
+        remote_version = remote_manifest.get("version") if remote_manifest else None
+        local_version = local_manifest.get("version")
+
+        should_upload = (not reusing_sandbox) or (remote_version != local_version)
+        if should_upload:
+            if on_progress:
+                on_progress("Uploading skills...")
+            await self._upload_skills(local_skills_dirs)
+            return True
+
+        return False
+
+    async def _upload_skills(self, local_skills_dirs: list[tuple[str, str]]) -> None:
+        """Upload skill files from local filesystem to sandbox.
+
+        Skills are markdown-based instruction files that extend agent capabilities.
+        Each skill is a directory containing a SKILL.md file with YAML frontmatter.
+
+        Skills from later local directories override earlier ones.
+
+        Args:
+            local_skills_dirs: List of (local_path, sandbox_path) tuples.
+                Example: [("~/.ptc-agent/skills", "/home/daytona/skills")]
+        """
+        assert self.sandbox is not None
+        sandbox = self.sandbox
+
+        local_roots = [local_dir for local_dir, _ in local_skills_dirs]
+        manifest = await self._compute_skills_manifest(local_roots)
+
+        if not manifest.get("files"):
+            logger.debug("No skills found; skipping upload")
+            return
+
+        semaphore = asyncio.Semaphore(4)
+        upload_tasks: list[asyncio.Task[None]] = []
+        uploaded_skill_names: set[str] = set()
+
+        async def list_skill_dirs(local_root: Path) -> list[Path]:
+            def _list() -> list[Path]:
+                dirs: list[Path] = []
+                for entry in local_root.iterdir():
+                    if not entry.is_dir():
+                        continue
+                    if not (entry / "SKILL.md").exists():
+                        continue
+                    dirs.append(entry)
+                return dirs
+
+            return await asyncio.to_thread(_list)
+
+        async def list_skill_files(skill_dir: Path) -> list[Path]:
+            def _list() -> list[Path]:
+                return [p for p in skill_dir.iterdir() if p.is_file()]
+
+            return await asyncio.to_thread(_list)
+
+        async def upload_one(local_file: Path, sandbox_path: str) -> None:
+            async with semaphore:
+                async with aiofiles.open(str(local_file), "rb") as f:
+                    content = await f.read()
+
+                await self._daytona_call(
+                    sandbox.fs.upload_file,
+                    content,
+                    sandbox_path,
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                )
+
+        total_skills_uploaded = 0
+
+        for local_dir, sandbox_dir in local_skills_dirs:
+            local_path = Path(local_dir).expanduser()
+            if not local_path.exists():
+                logger.debug(f"Skills directory not found: {local_path}")
+                continue
+
+            # Create sandbox skills directory
+            await self._daytona_call(
+                sandbox.process.exec,
+                f"mkdir -p {shlex.quote(sandbox_dir)}",
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+
+            # Upload all skill directories
+            for skill_dir in await list_skill_dirs(local_path):
+                skill_name = skill_dir.name
+                if skill_name in ("", ".", ".."):
+                    continue
+
+                sandbox_skill_dir = f"{sandbox_dir.rstrip('/')}/{skill_name}"
+
+                # Later sources override earlier ones; delete the existing directory to avoid stale files.
+                if skill_name in uploaded_skill_names:
+                    await self._daytona_call(
+                        sandbox.process.exec,
+                        f"rm -rf {shlex.quote(sandbox_skill_dir)}",
+                        retry_policy=_DaytonaRetryPolicy.SAFE,
+                    )
+
+                await self._daytona_call(
+                    sandbox.process.exec,
+                    f"mkdir -p {shlex.quote(sandbox_skill_dir)}",
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                )
+                uploaded_skill_names.add(skill_name)
+                total_skills_uploaded += 1
+
+                for file_path in await list_skill_files(skill_dir):
+                    sandbox_file = f"{sandbox_skill_dir}/{file_path.name}"
+                    upload_tasks.append(asyncio.create_task(upload_one(file_path, sandbox_file)))
+
+        if upload_tasks:
+            await asyncio.gather(*upload_tasks)
+
+        # Persist manifest in sandbox for cheap change detection on sandbox reuse.
+        manifest_dir = local_skills_dirs[-1][1].rstrip("/")
+        manifest_path = f"{manifest_dir}/{self.SKILLS_MANIFEST_FILENAME}"
+        manifest_bytes = json.dumps(manifest, sort_keys=True).encode("utf-8")
+        await self._daytona_call(
+            sandbox.fs.upload_file,
+            manifest_bytes,
+            manifest_path,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
+
+        logger.info(
+            "Uploaded skills to sandbox",
+            skill_count=total_skills_uploaded,
+            file_count=len(manifest.get("files", {})),
+            manifest_path=manifest_path,
+        )
 
     async def _install_dependencies(self) -> None:
         """Install required Python packages in sandbox."""
@@ -887,10 +1269,11 @@ class PTCSandbox:
         try:
             # Write code to file
             code_path = f"code/{execution_id}.py"
-            await self._run_sync(
+            await self._daytona_call(
                 self.sandbox.fs.upload_file,
                 code.encode("utf-8"),
-                code_path
+                code_path,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
             )
 
             # Get list of files before execution
@@ -901,7 +1284,10 @@ class PTCSandbox:
 
             # Set PYTHONPATH to working directory so code can import from tools/
             # Also pass MCP server environment variables
-            work_dir = await self._run_sync(self.sandbox.get_work_dir)
+            work_dir = await self._daytona_call(
+                self.sandbox.get_work_dir,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
 
             exec_env = {"PYTHONPATH": work_dir}
 
@@ -924,11 +1310,12 @@ class PTCSandbox:
             # Use code_run() for native artifact support (captures matplotlib charts)
             from daytona_sdk.common.process import CodeRunParams
 
-            result = await self._run_sync(
+            result = await self._daytona_call(
                 self.sandbox.process.code_run,
                 code,
                 params=CodeRunParams(env=exec_env),
-                timeout=timeout_val
+                timeout=timeout_val,
+                retry_policy=_DaytonaRetryPolicy.UNSAFE,
             )
 
             # Get stdout/stderr and exit code from Daytona ExecuteResponse
@@ -1095,10 +1482,11 @@ class PTCSandbox:
             # Use relative path for upload (Daytona SDK handles it relative to work_dir)
             script_relative_path = f"code/{bash_id}.sh"
             assert self.sandbox is not None
-            await self._run_sync(
+            await self._daytona_call(
                 self.sandbox.fs.upload_file,
                 script_content.encode("utf-8"),
-                script_relative_path
+                script_relative_path,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
             )
 
             # Get work directory for absolute path in bash execution
@@ -1175,7 +1563,11 @@ class PTCSandbox:
         """
         try:
             assert self.sandbox is not None
-            file_infos = await self._run_sync(self.sandbox.fs.list_files, "results")
+            file_infos = await self._daytona_call(
+                self.sandbox.fs.list_files,
+                "results",
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
             if not file_infos:
                 return []
             # Return paths relative to workspace, not just filenames
@@ -1183,6 +1575,93 @@ class PTCSandbox:
         except (OSError, AttributeError) as e:
             logger.warning(f"Error listing result files: {e}")
             return []
+
+    async def download_file_bytes_async(self, filepath: str) -> bytes | None:
+        """Download raw bytes from sandbox.
+
+        This path is safe to retry automatically.
+
+        Returns:
+            Bytes if downloaded, or None if missing.
+
+        Raises:
+            SandboxTransientError: If a transient sandbox transport error persists.
+        """
+        try:
+            assert self.sandbox is not None
+            return await self._daytona_call(
+                self.sandbox.fs.download_file,
+                filepath,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+        except SandboxTransientError:
+            raise
+        except Exception as e:
+            logger.debug("Failed to download file bytes", filepath=filepath, error=str(e))
+            return None
+
+    async def read_file_text_async(self, filepath: str) -> str | None:
+        """Read a UTF-8 text file from the sandbox.
+
+        This path is safe to retry automatically.
+        """
+        content_bytes = await self.download_file_bytes_async(filepath)
+        if not content_bytes:
+            return None
+        try:
+            return content_bytes.decode("utf-8")
+        except UnicodeDecodeError as e:
+            logger.debug("Failed to decode file as utf-8", filepath=filepath, error=str(e))
+            return None
+
+    async def upload_file_bytes_async(self, filepath: str, content: bytes) -> bool:
+        """Upload raw bytes to the sandbox.
+
+        This path is safe to retry automatically because uploads overwrite the target.
+
+        Raises:
+            SandboxTransientError: If a transient sandbox transport error persists.
+        """
+        if self.config.filesystem.enable_path_validation and not self.validate_path(filepath):
+            logger.error(f"Access denied: {filepath} is not in allowed directories")
+            return False
+
+        try:
+            assert self.sandbox is not None
+            await self._daytona_call(
+                self.sandbox.fs.upload_file,
+                content,
+                filepath,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+            return True
+        except SandboxTransientError:
+            raise
+        except Exception as e:
+            logger.debug("Failed to upload file bytes", filepath=filepath, error=str(e))
+            return False
+
+    async def write_file_text_async(self, filepath: str, content: str) -> bool:
+        """Write UTF-8 text to a sandbox file (overwrites).
+
+        This path is safe to retry automatically.
+        """
+        try:
+            return await self.upload_file_bytes_async(filepath, content.encode("utf-8"))
+        except UnicodeEncodeError as e:
+            logger.debug("Failed to encode file as utf-8", filepath=filepath, error=str(e))
+            return False
+
+    async def read_file_range_async(self, file_path: str, offset: int = 1, limit: int = 2000) -> str | None:
+        """Read a specific range of lines from a UTF-8 text file."""
+        content = await self.read_file_text_async(file_path)
+        if content is None:
+            return None
+
+        lines = content.splitlines()
+        start = max(0, offset - 1)
+        end = start + limit
+        return "\n".join(lines[start:end])
 
     def read_file(self, filepath: str) -> str | None:
         """Read a file from the sandbox.
@@ -1199,7 +1678,11 @@ class PTCSandbox:
             content_bytes = self.sandbox.fs.download_file(filepath)
             return content_bytes.decode("utf-8") if content_bytes else None
         except (OSError, UnicodeDecodeError) as e:
-            logger.error(f"Failed to read file {filepath}: {e}")
+            logger.debug(f"Failed to read file {filepath}: {e}")
+            return None
+        except Exception as e:
+            # Daytona SDK may raise non-OSError exceptions (e.g., 404/503 wrapped errors).
+            logger.debug(f"Failed to read file {filepath}: {e}")
             return None
 
     def download_file_bytes(self, filepath: str) -> bytes | None:
@@ -1215,8 +1698,36 @@ class PTCSandbox:
             assert self.sandbox is not None
             return self.sandbox.fs.download_file(filepath)
         except OSError as e:
-            logger.error(f"Failed to download file bytes {filepath}: {e}")
+            logger.debug(f"Failed to download file bytes {filepath}: {e}")
             return None
+        except Exception as e:
+            logger.debug(f"Failed to download file bytes {filepath}: {e}")
+            return None
+
+    def upload_file_bytes(self, filepath: str, content: bytes) -> bool:
+        """Upload raw bytes to sandbox - works for any file type.
+
+        Args:
+            filepath: Path to file in sandbox
+            content: Raw bytes to upload
+
+        Returns:
+            True if successful
+        """
+        try:
+            if self.config.filesystem.enable_path_validation and not self.validate_path(filepath):
+                logger.error(f"Access denied: {filepath} is not in allowed directories")
+                return False
+            assert self.sandbox is not None
+            self.sandbox.fs.upload_file(content, filepath)
+            logger.debug(f"Uploaded {len(content)} bytes to {filepath}")
+            return True
+        except OSError as e:
+            logger.debug(f"Failed to upload file bytes {filepath}: {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to upload file bytes {filepath}: {e}")
+            return False
 
     def download_file(self, sandbox_path: str, local_path: str) -> bool:
         """Download a file from sandbox to local filesystem.
@@ -1450,6 +1961,61 @@ class PTCSandbox:
             logger.error(f"Failed to create directory {dirpath}: {e}")
             return False
 
+    async def edit_file_text_async(
+        self,
+        filepath: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> dict[str, Any]:
+        """Async edit for tools; safe to retry underlying I/O.
+
+        This does not retry the logical edit itself; it only makes file I/O resilient.
+        """
+        try:
+            if self.config.filesystem.enable_path_validation and not self.validate_path(filepath):
+                return {
+                    "success": False,
+                    "error": f"Access denied: {filepath} is not in allowed directories",
+                }
+
+            content = await self.read_file_text_async(filepath)
+            if content is None:
+                return {"success": False, "error": "File not found"}
+
+            if old_string == new_string:
+                return {"success": False, "error": "old_string and new_string must be different"}
+
+            if old_string not in content:
+                return {"success": False, "error": f"old_string not found in file: {filepath}"}
+
+            if not replace_all:
+                occurrences = content.count(old_string)
+                if occurrences > 1:
+                    return {
+                        "success": False,
+                        "error": "old_string found multiple times and requires more code context to uniquely identify the intended match",
+                    }
+
+            updated = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+
+            if updated == content:
+                return {"success": False, "error": "Edit produced no changes"}
+
+            write_ok = await self.write_file_text_async(filepath, updated)
+            if not write_ok:
+                return {"success": False, "error": "Failed to write updated file"}
+
+            return {
+                "success": True,
+                "message": "File edited successfully",
+            }
+
+        except Exception as e:
+            logger.debug("Async edit_file failed", filepath=filepath, error=str(e))
+            return {"success": False, "error": f"Edit operation failed: {e!s}"}
+
     def edit_file(self, filepath: str, old_string: str, new_string: str, *, replace_all: bool = False) -> dict[str, Any]:
         """Edit a file using exact string replacement (Claude Code standard).
 
@@ -1580,6 +2146,59 @@ class PTCSandbox:
             logger.error(f"Failed to search files: {e}")
             return []
 
+    async def glob_files_async(self, pattern: str, path: str = ".") -> list[str]:
+        """Async glob; safe to retry automatically."""
+        try:
+            if self.config.filesystem.enable_path_validation and not self.validate_path(path):
+                logger.error(f"Access denied: {path} is not in allowed directories")
+                return []
+
+            search_path = self._normalize_search_path(path)
+
+            if "**" not in pattern and "/" not in pattern:
+                pattern = f"**/{pattern}"
+
+            glob_code = textwrap.dedent(f"""\
+                import glob
+                import os
+
+                pattern = {pattern!r}
+                search_path = {search_path!r}
+
+                full_pattern = os.path.join(search_path, pattern)
+                matches = glob.glob(full_pattern, recursive=True)
+                files = [f for f in matches if os.path.isfile(f)]
+
+                try:
+                    files_with_mtime = [(f, os.path.getmtime(f)) for f in files]
+                    sorted_files = sorted(files_with_mtime, key=lambda x: x[1], reverse=True)
+                    for f, _ in sorted_files:
+                        print(f)  # noqa: T201
+                except OSError:
+                    for f in files:
+                        print(f)  # noqa: T201
+            """)
+
+            encoded_code = base64.b64encode(glob_code.encode()).decode()
+            cmd = f'python3 -c "import base64; exec(base64.b64decode(\'{encoded_code}\').decode())"'
+
+            assert self.sandbox is not None
+            result = await self._daytona_call(
+                self.sandbox.process.exec,
+                cmd,
+                timeout=30,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+
+            output = result.result.strip() if getattr(result, "result", None) else ""
+            if not output:
+                return []
+            return output.split("\n")
+
+        except Exception as e:
+            logger.debug("Async glob failed", pattern=pattern, path=path, error=str(e))
+            return []
+
     def glob_files(self, pattern: str, path: str = ".") -> list[str]:
         """Find files matching a glob pattern, sorted by modification time.
 
@@ -1651,6 +2270,103 @@ class PTCSandbox:
             logger.error(f"Failed to glob files: {e}")
             # Fallback to search_files if glob execution fails
             return self.search_files(pattern, path)
+
+    async def grep_content_async(
+        self,
+        pattern: str,
+        path: str = ".",
+        output_mode: str = "files_with_matches",
+        glob: str | None = None,
+        type: str | None = None,  # noqa: A002 - matches ripgrep's --type flag
+        *,
+        case_insensitive: bool = False,
+        show_line_numbers: bool = True,
+        lines_after: int | None = None,
+        lines_before: int | None = None,
+        lines_context: int | None = None,
+        multiline: bool = False,
+        head_limit: int | None = None,
+        offset: int = 0,
+    ) -> Any:
+        """Async ripgrep; safe to retry automatically."""
+        try:
+            if self.config.filesystem.enable_path_validation and not self.validate_path(path):
+                logger.error(f"Access denied: {path} is not in allowed directories")
+                return []
+
+            cmd = ["rg"]
+            if output_mode == "files_with_matches":
+                cmd.append("-l")
+            elif output_mode == "count":
+                cmd.append("-c")
+
+            if case_insensitive:
+                cmd.append("-i")
+
+            if output_mode == "content" and show_line_numbers:
+                cmd.append("-n")
+
+            if lines_before:
+                cmd.extend(["-B", str(lines_before)])
+            if lines_after:
+                cmd.extend(["-A", str(lines_after)])
+            if lines_context:
+                cmd.extend(["-C", str(lines_context)])
+
+            if multiline:
+                cmd.extend(["-U", "--multiline-dotall"])
+
+            if glob:
+                cmd.extend(["--glob", glob])
+            if type:
+                cmd.extend(["--type", type])
+
+            cmd.append(pattern)
+            search_path = self._normalize_search_path(path)
+            cmd.append(search_path)
+
+            cmd_str = " ".join(f'"{c}"' if " " in c else c for c in cmd)
+            assert self.sandbox is not None
+            result = await self._daytona_call(
+                self.sandbox.process.exec,
+                cmd_str,
+                timeout=60,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+
+            output = result.result.strip() if getattr(result, "result", None) else ""
+            if not output:
+                return []
+
+            if output_mode == "count":
+                count_results: list[tuple[str, int]] = []
+                for line in output.split("\n"):
+                    if ":" in line:
+                        parts = line.rsplit(":", 1)
+                        if len(parts) == 2:
+                            try:
+                                count_results.append((parts[0], int(parts[1])))
+                            except ValueError:
+                                count_results.append((line, 0))
+                    else:
+                        count_results.append((line, 0))
+
+                if offset > 0:
+                    count_results = count_results[offset:]
+                if head_limit:
+                    count_results = count_results[:head_limit]
+                return count_results
+
+            results_strs = output.split("\n")
+            if offset > 0:
+                results_strs = results_strs[offset:]
+            if head_limit:
+                results_strs = results_strs[:head_limit]
+            return results_strs
+
+        except Exception as e:
+            logger.debug("Async grep failed", pattern=pattern, path=path, error=str(e))
+            return []
 
     def grep_content(
         self,
@@ -1752,10 +2468,7 @@ class PTCSandbox:
                 logger.info(f"Grep found 0 results for pattern {pattern}")
                 return []
 
-            # Process results based on output_mode
-            if output_mode == "files_with_matches":
-                results: list[str] | list[tuple[str, int]] = output.split("\n")
-            elif output_mode == "count":
+            if output_mode == "count":
                 # ripgrep count format: filename:count
                 count_results: list[tuple[str, int]] = []
                 for line in output.split("\n"):
@@ -1768,18 +2481,25 @@ class PTCSandbox:
                                 count_results.append((line, 0))
                     else:
                         count_results.append((line, 0))
-                results = count_results
-            else:  # content mode
-                results = output.split("\n")
 
-            # Apply offset and head_limit
+                if offset > 0:
+                    count_results = count_results[offset:]
+                if head_limit:
+                    count_results = count_results[:head_limit]
+
+                logger.info(f"Grep found {len(count_results)} results for pattern {pattern}")
+                return count_results
+
+            # "files_with_matches" and "content" modes both return strings
+            results_strs = output.split("\n")
+
             if offset > 0:
-                results = results[offset:]
+                results_strs = results_strs[offset:]
             if head_limit:
-                results = results[:head_limit]
+                results_strs = results_strs[:head_limit]
 
-            logger.info(f"Grep found {len(results)} results for pattern {pattern}")
-            return results
+            logger.info(f"Grep found {len(results_strs)} results for pattern {pattern}")
+            return results_strs
 
         except (OSError, ValueError) as e:
             logger.error(f"Failed to grep content: {e}")
@@ -1856,7 +2576,9 @@ class PTCSandbox:
                     else:
                         files = [f for f in files if f.endswith(ext)]
 
-            results: list[str] | list[tuple[str, int]] = []
+            results_files: list[str] = []
+            results_counts: list[tuple[str, int]] = []
+            results_content: list[str] = []
 
             # Search each file
             for file_path in files:
@@ -1867,12 +2589,12 @@ class PTCSandbox:
 
                     if output_mode == "files_with_matches":
                         if regex.search(content):
-                            results.append(file_path)  # type: ignore[arg-type]
+                            results_files.append(file_path)
 
                     elif output_mode == "count":
                         matches = regex.findall(content)
                         if matches:
-                            results.append((file_path, len(matches)))  # type: ignore[arg-type]
+                            results_counts.append((file_path, len(matches)))
 
                     elif output_mode == "content":
                         lines = content.splitlines()
@@ -1892,20 +2614,28 @@ class PTCSandbox:
                                     marker = ">" if j == i else " "
                                     context_lines.append(f"{prefix}{line_num}{marker}{lines[j]}")
 
-                                results.append("\n".join(context_lines))  # type: ignore[arg-type]
+                                results_content.append("\n".join(context_lines))
 
                 except (OSError, UnicodeDecodeError) as e:
                     logger.debug(f"Error searching file {file_path}: {e}")
                     continue
 
-            # Apply offset and head_limit
-            if offset > 0:
-                results = results[offset:]
-            if head_limit:
-                results = results[:head_limit]
+            if output_mode == "count":
+                if offset > 0:
+                    results_counts = results_counts[offset:]
+                if head_limit:
+                    results_counts = results_counts[:head_limit]
+                logger.info(f"Grep fallback found {len(results_counts)} results for pattern {pattern}")
+                return results_counts
 
-            logger.info(f"Grep fallback found {len(results)} results for pattern {pattern}")
-            return results
+            results_strs = results_files if output_mode == "files_with_matches" else results_content
+            if offset > 0:
+                results_strs = results_strs[offset:]
+            if head_limit:
+                results_strs = results_strs[:head_limit]
+
+            logger.info(f"Grep fallback found {len(results_strs)} results for pattern {pattern}")
+            return results_strs
 
         except (OSError, ValueError, ImportError) as e:
             logger.error(f"Failed to grep content (fallback): {e}")

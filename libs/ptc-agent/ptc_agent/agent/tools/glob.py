@@ -1,6 +1,7 @@
 """Glob tool for file pattern matching."""
 
 import asyncio
+import inspect
 from typing import Any
 
 import structlog
@@ -32,9 +33,9 @@ def create_glob_tool(sandbox: Any) -> BaseTool:
         Returns:
             Matching file paths sorted by modification time, or ERROR
         """
+        search_path = path if path is not None else "."
         try:
             # Normalize virtual path to absolute sandbox path
-            search_path = path if path is not None else "."
             normalized_path = sandbox.normalize_path(search_path)
 
             logger.info("Globbing files", pattern=pattern, path=search_path, normalized_path=normalized_path)
@@ -46,7 +47,15 @@ def create_glob_tool(sandbox: Any) -> BaseTool:
                 return f"ERROR: {error_msg}"
 
             # Search for files matching the pattern using normalized path
-            matches = await asyncio.to_thread(sandbox.glob_files, pattern, normalized_path)
+            method = getattr(sandbox, "glob_files_async", None)
+            if callable(method):
+                maybe = method(pattern, normalized_path)
+                if inspect.isawaitable(maybe):
+                    matches = await maybe
+                else:
+                    matches = await asyncio.to_thread(sandbox.glob_files, pattern, normalized_path)
+            else:
+                matches = await asyncio.to_thread(sandbox.glob_files, pattern, normalized_path)
 
             if not matches:
                 logger.info("No files found", pattern=pattern, path=search_path)

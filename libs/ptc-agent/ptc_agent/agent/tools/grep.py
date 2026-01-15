@@ -1,6 +1,7 @@
 """Grep tool for content searching with ripgrep."""
 
 import asyncio
+import inspect
 import re
 from typing import Any, Literal
 
@@ -59,6 +60,7 @@ def create_grep_tool(sandbox: Any) -> BaseTool:
         Returns:
             Search results or ERROR
         """
+        search_path = path if path is not None else "."
         try:
             # Validate regex pattern to prevent crashes from malformed patterns
             try:
@@ -69,7 +71,6 @@ def create_grep_tool(sandbox: Any) -> BaseTool:
                 return f"ERROR: {error_msg}"
 
             # Normalize virtual path to absolute sandbox path
-            search_path = path if path is not None else "."
             normalized_path = sandbox.normalize_path(search_path)
 
             logger.info(
@@ -107,7 +108,15 @@ def create_grep_tool(sandbox: Any) -> BaseTool:
             }
 
             # Search for content matching the pattern
-            results = await asyncio.to_thread(sandbox.grep_content, **options)
+            method = getattr(sandbox, "grep_content_async", None)
+            if callable(method):
+                maybe = method(**options)
+                if inspect.isawaitable(maybe):
+                    results = await maybe
+                else:
+                    results = await asyncio.to_thread(sandbox.grep_content, **options)
+            else:
+                results = await asyncio.to_thread(sandbox.grep_content, **options)
 
             if not results:
                 logger.info("No matches found", pattern=pattern, path=search_path)

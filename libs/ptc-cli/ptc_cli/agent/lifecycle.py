@@ -2,6 +2,8 @@
 
 from collections.abc import Callable
 
+import structlog
+
 from ptc_cli.agent.management import get_agent_md_content
 from ptc_cli.agent.persistence import (
     delete_persisted_session,
@@ -10,6 +12,8 @@ from ptc_cli.agent.persistence import (
     save_persisted_session,
     update_session_last_used,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 async def create_agent_with_session(
@@ -97,6 +101,16 @@ async def create_agent_with_session(
         sandbox_id_to_save = getattr(session.sandbox, "sandbox_id", None)
         if sandbox_id_to_save:
             save_persisted_session(agent_name, sandbox_id_to_save, config_hash)
+
+    # Upload skills to sandbox if enabled
+    if config.skills.enabled and session.sandbox:
+        skill_dirs = config.skills.local_skill_dirs_with_sandbox()
+        try:
+            await session.sandbox.sync_skills(skill_dirs, reusing_sandbox=reusing_sandbox, on_progress=report)
+        except Exception as e:  # noqa: BLE001
+            # Skills are helpful but should not prevent session startup.
+            logger.warning("Skills sync failed; continuing without skills", error=str(e), reusing_sandbox=reusing_sandbox)
+            report("Skills sync failed; continuing...")
 
     report("Creating agent...")
 
