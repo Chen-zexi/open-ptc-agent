@@ -1,7 +1,5 @@
 """Grep tool for content searching with ripgrep."""
 
-import asyncio
-import inspect
 import re
 from typing import Any, Literal
 
@@ -107,16 +105,7 @@ def create_grep_tool(sandbox: Any) -> BaseTool:
                 "offset": offset,
             }
 
-            # Search for content matching the pattern
-            method = getattr(sandbox, "grep_content_async", None)
-            if callable(method):
-                maybe = method(**options)
-                if inspect.isawaitable(maybe):
-                    results = await maybe
-                else:
-                    results = await asyncio.to_thread(sandbox.grep_content, **options)
-            else:
-                results = await asyncio.to_thread(sandbox.grep_content, **options)
+            results = await sandbox.agrep_content(**options)
 
             if not results:
                 logger.info("No matches found", pattern=pattern, path=search_path)

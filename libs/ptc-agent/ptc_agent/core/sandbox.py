@@ -10,14 +10,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import partial
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
 import aiofiles
 import structlog
-from daytona_sdk import Daytona, DaytonaConfig
+from daytona_sdk import AsyncDaytona, DaytonaConfig
 from daytona_sdk.common.daytona import (
     CreateSandboxFromSnapshotParams,
     Image,
@@ -109,7 +108,8 @@ class PTCSandbox:
             api_key=config.daytona.api_key,
             api_url=config.daytona.base_url
         )
-        self.daytona_client = Daytona(daytona_config)
+        self.daytona_client = AsyncDaytona(daytona_config)
+
         # External Daytona SDK sandbox object - Any type is required since it's from external SDK
         self.sandbox: Any | None = None
         self.sandbox_id: str | None = None
@@ -122,26 +122,6 @@ class PTCSandbox:
 
         logger.info("Initialized PTCSandbox")
 
-    async def _run_sync(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """Run a synchronous function in a thread pool to avoid blocking.
-
-        This wrapper is used for Daytona SDK calls which are synchronous.
-
-        Args:
-            func: The synchronous function to run
-            *args: Positional arguments for the function
-            **kwargs: Keyword arguments for the function
-
-        Returns:
-            The result of the function call
-        """
-        loop = asyncio.get_running_loop()
-        if kwargs:
-            func_with_kwargs = partial(func, *args, **kwargs)
-            return await loop.run_in_executor(None, func_with_kwargs)
-        if args:
-            return await loop.run_in_executor(None, func, *args)
-        return await loop.run_in_executor(None, func)
 
     def _get_mcp_packages(self) -> list[str]:
         """Extract MCP package names from enabled stdio servers.
@@ -269,7 +249,11 @@ class PTCSandbox:
 
         # Check if snapshot exists and is usable
         try:
-            snapshots_result = await self._run_sync(self.daytona_client.snapshot.list)
+            snapshots_result = await self._daytona_call(
+                self.daytona_client.snapshot.list,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+                allow_reconnect=False,
+            )
             snapshots = snapshots_result.items if hasattr(snapshots_result, "items") else snapshots_result
 
             # Only consider active or building snapshots as existing
@@ -290,7 +274,12 @@ class PTCSandbox:
                     )
                     # Delete failed snapshot
                     try:
-                        await self._run_sync(self.daytona_client.snapshot.delete, snapshot_obj)
+                        await self._daytona_call(
+                            self.daytona_client.snapshot.delete,
+                            snapshot_obj,
+                            retry_policy=_DaytonaRetryPolicy.SAFE,
+                            allow_reconnect=False,
+                        )
                         logger.info("Deleted failed snapshot", snapshot_name=snapshot_name)
                         # Give the deletion a moment to complete
                         await asyncio.sleep(2)
@@ -315,13 +304,15 @@ class PTCSandbox:
             image = self._create_snapshot_image()
 
             try:
-                await self._run_sync(
+                await self._daytona_call(
                     self.daytona_client.snapshot.create,
                     CreateSnapshotParams(
                         name=snapshot_name,
-                        image=image
+                        image=image,
                     ),
-                    on_logs=lambda log: logger.debug("Snapshot build", log=log)
+                    on_logs=lambda log: logger.debug("Snapshot build", log=log),
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                    allow_reconnect=False,
                 )
                 logger.info("Snapshot created successfully", snapshot_name=snapshot_name)
                 return snapshot_name
@@ -362,9 +353,11 @@ class PTCSandbox:
             # Create sandbox from snapshot (FAST!)
             logger.info("Creating sandbox from snapshot", snapshot_name=snapshot_name)
             try:
-                self.sandbox = await self._run_sync(
+                self.sandbox = await self._daytona_call(
                     self.daytona_client.create,
-                    CreateSandboxFromSnapshotParams(snapshot=snapshot_name)
+                    CreateSandboxFromSnapshotParams(snapshot=snapshot_name),
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                    allow_reconnect=False,
                 )
                 logger.info("Sandbox created from snapshot", snapshot_name=snapshot_name)
             except OSError as e:
@@ -377,7 +370,11 @@ class PTCSandbox:
         if not snapshot_name:
             # Fallback to default creation
             logger.info("Creating sandbox from default image")
-            self.sandbox = await self._run_sync(self.daytona_client.create)
+            self.sandbox = await self._daytona_call(
+                self.daytona_client.create,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+                allow_reconnect=False,
+            )
             assert self.sandbox is not None
 
             sandbox = self.sandbox
@@ -460,7 +457,12 @@ class PTCSandbox:
 
         # Get the existing sandbox from Daytona with error handling
         try:
-            self.sandbox = await self._run_sync_with_retries(self.daytona_client.get, sandbox_id)
+            self.sandbox = await self._daytona_call(
+                self.daytona_client.get,
+                sandbox_id,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+                allow_reconnect=False,
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to find sandbox {sandbox_id}. It may have been deleted. "
@@ -479,7 +481,11 @@ class PTCSandbox:
                 logger.info("Sandbox already started, skipping start", sandbox_id=sandbox_id)
             elif state_value in ("stopped", "starting"):
                 logger.info("Starting stopped sandbox", sandbox_id=sandbox_id, state=state_value)
-                await self._run_sync_with_retries(sandbox.start, timeout=60)
+                await self._daytona_call(
+                    sandbox.start,
+                    timeout=60,
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                )
             else:
                 raise RuntimeError(
                     f"Cannot reconnect to sandbox in state: {state_value}. "
@@ -488,10 +494,17 @@ class PTCSandbox:
         else:
             # No state attribute, assume we need to start
             logger.info("Starting sandbox (state unknown)", sandbox_id=sandbox_id)
-            await self._run_sync_with_retries(sandbox.start, timeout=60)
+            await self._daytona_call(
+                    sandbox.start,
+                    timeout=60,
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                )
 
         # Get work directory reference
-        self._work_dir = await self._run_sync_with_retries(sandbox.get_work_dir)
+        self._work_dir = await self._daytona_call(
+            sandbox.get_work_dir,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
         logger.info(f"Sandbox working directory: {self._work_dir}")
 
         # SKIP: _setup_workspace() - directories already exist
@@ -530,7 +543,11 @@ class PTCSandbox:
 
         try:
             logger.info("Stopping sandbox", sandbox_id=self.sandbox_id)
-            await self._run_sync(self.sandbox.stop, timeout=60)
+            await self._daytona_call(
+                self.sandbox.stop,
+                timeout=60,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
             logger.info("Sandbox stopped", sandbox_id=self.sandbox_id)
         except Exception as e:
             # Log warning but don't raise - sandbox may already be stopped or unavailable
@@ -546,7 +563,10 @@ class PTCSandbox:
 
         # Get the working directory
         assert self.sandbox is not None
-        work_dir = await self._run_sync(self.sandbox.get_work_dir)
+        work_dir = await self._daytona_call(
+            self.sandbox.get_work_dir,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
         logger.info(f"Sandbox working directory: {work_dir}")
 
         # Store work_dir for use by other methods
@@ -565,7 +585,11 @@ class PTCSandbox:
         async def create_directory(directory: str) -> None:
             try:
                 assert self.sandbox is not None
-                await self._run_sync(self.sandbox.process.exec, f"mkdir -p {directory}")
+                await self._daytona_call(
+                    self.sandbox.process.exec,
+                    f"mkdir -p {directory}",
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                )
                 logger.info(f"Created directory: {directory}")
             except OSError as e:
                 logger.warning(f"Error creating directory {directory}: {e}")
@@ -633,7 +657,11 @@ class PTCSandbox:
         # If we have files to upload, create directory and upload in parallel
         if files_to_upload:
             assert self.sandbox is not None
-            await self._run_sync(self.sandbox.process.exec, f"mkdir -p {mcp_servers_dir}")
+            await self._daytona_call(
+                self.sandbox.process.exec,
+                f"mkdir -p {mcp_servers_dir}",
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
 
             async def upload_file(server_name: str, local_path: str, sandbox_path: str) -> None:
                 # Read file from host using aiofiles to avoid blocking
@@ -642,10 +670,11 @@ class PTCSandbox:
 
                 # Upload to sandbox
                 assert self.sandbox is not None
-                await self._run_sync(
+                await self._daytona_call(
                     self.sandbox.fs.upload_file,
                     content.encode("utf-8"),
-                    sandbox_path
+                    sandbox_path,
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
                 )
 
                 logger.info(
@@ -732,7 +761,7 @@ class PTCSandbox:
 
         for attempt in range(1, retries + 1):
             try:
-                return await self._run_sync(func, *args, **kwargs)
+                return await func(*args, **kwargs)
             except Exception as e:
                 if not self._is_transient_daytona_error(e):
                     raise
@@ -777,23 +806,6 @@ class PTCSandbox:
 
         raise SandboxTransientError("Transient sandbox transport error")
 
-    async def _run_sync_with_retries(
-        self,
-        func: Callable[..., Any],
-        *args: Any,
-        retries: int = 5,
-        initial_delay_s: float = 0.25,
-        **kwargs: Any,
-    ) -> Any:
-        return await self._daytona_call(
-            func,
-            *args,
-            retry_policy=_DaytonaRetryPolicy.SAFE,
-            allow_reconnect=False,
-            retries=retries,
-            initial_delay_s=initial_delay_s,
-            **kwargs,
-        )
 
     async def _compute_skills_manifest(self, local_skill_roots: list[str]) -> dict[str, Any]:
         def build() -> dict[str, Any]:
@@ -867,7 +879,7 @@ class PTCSandbox:
         sandbox_base = local_skills_dirs[-1][1].rstrip("/")
         manifest_path = f"{sandbox_base}/{self.SKILLS_MANIFEST_FILENAME}"
 
-        remote_manifest_text = await self.read_file_text_async(manifest_path)
+        remote_manifest_text = await self.aread_file_text(manifest_path)
         remote_manifest: dict[str, Any] | None = None
         if remote_manifest_text:
             try:
@@ -1025,7 +1037,11 @@ class PTCSandbox:
 
         try:
             assert self.sandbox is not None
-            _result = await self._run_sync(self.sandbox.process.exec, install_cmd)
+            _result = await self._daytona_call(
+                self.sandbox.process.exec,
+                install_cmd,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
             logger.info("Dependencies installed")
         except OSError as e:
             logger.error(f"Failed to install dependencies: {e}")
@@ -1060,7 +1076,11 @@ class PTCSandbox:
         assert self.sandbox is not None
         for server_name in tools_by_server:
             doc_dir = f"{work_dir}/tools/docs/{server_name}"
-            await self._run_sync(self.sandbox.process.exec, f"mkdir -p {doc_dir}")
+            await self._daytona_call(
+                self.sandbox.process.exec,
+                f"mkdir -p {doc_dir}",
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
 
         for server_name, tools in tools_by_server.items():
             # Generate Python module
@@ -1090,10 +1110,11 @@ class PTCSandbox:
         # Upload all files in parallel
         async def upload_file(content_bytes: bytes, path: str, log_info: tuple[str, dict[str, str]] | None) -> None:
             assert self.sandbox is not None
-            await self._run_sync(
+            await self._daytona_call(
                 self.sandbox.fs.upload_file,
                 content_bytes,
-                path
+                path,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
             )
             if log_info:
                 msg, kwargs = log_info
@@ -1221,9 +1242,10 @@ class PTCSandbox:
         try:
             logger.info(f"Auto-installing missing package: {package}")
             assert self.sandbox is not None
-            result = await self._run_sync(
+            result = await self._daytona_call(
                 self.sandbox.process.exec,
-                f"uv pip install -q {package}"
+                f"uv pip install -q {package}",
+                retry_policy=_DaytonaRetryPolicy.SAFE,
             )
             exit_code = getattr(result, "exit_code", 1)
             if exit_code == 0:
@@ -1576,7 +1598,7 @@ class PTCSandbox:
             logger.warning(f"Error listing result files: {e}")
             return []
 
-    async def download_file_bytes_async(self, filepath: str) -> bytes | None:
+    async def adownload_file_bytes(self, filepath: str) -> bytes | None:
         """Download raw bytes from sandbox.
 
         This path is safe to retry automatically.
@@ -1600,12 +1622,12 @@ class PTCSandbox:
             logger.debug("Failed to download file bytes", filepath=filepath, error=str(e))
             return None
 
-    async def read_file_text_async(self, filepath: str) -> str | None:
+    async def aread_file_text(self, filepath: str) -> str | None:
         """Read a UTF-8 text file from the sandbox.
 
         This path is safe to retry automatically.
         """
-        content_bytes = await self.download_file_bytes_async(filepath)
+        content_bytes = await self.adownload_file_bytes(filepath)
         if not content_bytes:
             return None
         try:
@@ -1614,7 +1636,7 @@ class PTCSandbox:
             logger.debug("Failed to decode file as utf-8", filepath=filepath, error=str(e))
             return None
 
-    async def upload_file_bytes_async(self, filepath: str, content: bytes) -> bool:
+    async def aupload_file_bytes(self, filepath: str, content: bytes) -> bool:
         """Upload raw bytes to the sandbox.
 
         This path is safe to retry automatically because uploads overwrite the target.
@@ -1641,137 +1663,33 @@ class PTCSandbox:
             logger.debug("Failed to upload file bytes", filepath=filepath, error=str(e))
             return False
 
-    async def write_file_text_async(self, filepath: str, content: str) -> bool:
+    async def awrite_file_text(self, filepath: str, content: str) -> bool:
         """Write UTF-8 text to a sandbox file (overwrites).
 
         This path is safe to retry automatically.
         """
         try:
-            return await self.upload_file_bytes_async(filepath, content.encode("utf-8"))
+            return await self.aupload_file_bytes(filepath, content.encode("utf-8"))
         except UnicodeEncodeError as e:
             logger.debug("Failed to encode file as utf-8", filepath=filepath, error=str(e))
             return False
 
-    async def read_file_range_async(self, file_path: str, offset: int = 1, limit: int = 2000) -> str | None:
-        """Read a specific range of lines from a UTF-8 text file."""
-        content = await self.read_file_text_async(file_path)
+    async def aread_file_range(self, file_path: str, offset: int = 0, limit: int = 2000) -> str | None:
+        """Read a specific range of lines from a UTF-8 text file.
+
+        Args:
+            file_path: Path to the file.
+            offset: Line offset (0-indexed).
+            limit: Maximum number of lines.
+        """
+        content = await self.aread_file_text(file_path)
         if content is None:
             return None
 
         lines = content.splitlines()
-        start = max(0, offset - 1)
+        start = max(0, offset)
         end = start + limit
         return "\n".join(lines[start:end])
-
-    def read_file(self, filepath: str) -> str | None:
-        """Read a file from the sandbox.
-
-        Args:
-            filepath: Path to file in sandbox
-
-        Returns:
-            File contents or None if error
-        """
-        try:
-            # download_file returns bytes
-            assert self.sandbox is not None
-            content_bytes = self.sandbox.fs.download_file(filepath)
-            return content_bytes.decode("utf-8") if content_bytes else None
-        except (OSError, UnicodeDecodeError) as e:
-            logger.debug(f"Failed to read file {filepath}: {e}")
-            return None
-        except Exception as e:
-            # Daytona SDK may raise non-OSError exceptions (e.g., 404/503 wrapped errors).
-            logger.debug(f"Failed to read file {filepath}: {e}")
-            return None
-
-    def download_file_bytes(self, filepath: str) -> bytes | None:
-        """Download raw bytes from sandbox - works for any file type including images.
-
-        Args:
-            filepath: Path to file in sandbox
-
-        Returns:
-            Raw bytes or None if error
-        """
-        try:
-            assert self.sandbox is not None
-            return self.sandbox.fs.download_file(filepath)
-        except OSError as e:
-            logger.debug(f"Failed to download file bytes {filepath}: {e}")
-            return None
-        except Exception as e:
-            logger.debug(f"Failed to download file bytes {filepath}: {e}")
-            return None
-
-    def upload_file_bytes(self, filepath: str, content: bytes) -> bool:
-        """Upload raw bytes to sandbox - works for any file type.
-
-        Args:
-            filepath: Path to file in sandbox
-            content: Raw bytes to upload
-
-        Returns:
-            True if successful
-        """
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(filepath):
-                logger.error(f"Access denied: {filepath} is not in allowed directories")
-                return False
-            assert self.sandbox is not None
-            self.sandbox.fs.upload_file(content, filepath)
-            logger.debug(f"Uploaded {len(content)} bytes to {filepath}")
-            return True
-        except OSError as e:
-            logger.debug(f"Failed to upload file bytes {filepath}: {e}")
-            return False
-        except Exception as e:
-            logger.debug(f"Failed to upload file bytes {filepath}: {e}")
-            return False
-
-    def download_file(self, sandbox_path: str, local_path: str) -> bool:
-        """Download a file from sandbox to local filesystem.
-
-        Args:
-            sandbox_path: Path in sandbox
-            local_path: Local path to save to
-
-        Returns:
-            True if successful
-        """
-        try:
-            content = self.read_file(sandbox_path)
-            if content:
-                Path(local_path).write_text(content)
-                logger.info(f"Downloaded {sandbox_path} to {local_path}")
-                return True
-            return False
-        except OSError as e:
-            logger.error(f"Failed to download file: {e}")
-            return False
-
-    def get_file_info(self, filepath: str) -> dict[str, Any]:
-        """Get information about a file.
-
-        Args:
-            filepath: Path to file
-
-        Returns:
-            Dictionary with file information
-        """
-        try:
-            content = self.read_file(filepath)
-            if content:
-                return {
-                    "path": filepath,
-                    "size": len(content),
-                    "lines": len(content.splitlines()),
-                    "exists": True,
-                }
-            return {"path": filepath, "exists": False}
-        except (OSError, AttributeError) as e:
-            logger.error(f"Error getting file info: {e}")
-            return {"path": filepath, "exists": False, "error": str(e)}
 
     def normalize_path(self, path: str) -> str:
         """Normalize virtual path to absolute sandbox path (input normalization).
@@ -1878,38 +1796,10 @@ class PTCSandbox:
             return normalized, f"Access denied: {path} is not in allowed directories"
         return normalized, None
 
-    def write_file(self, filepath: str, content: str) -> bool:
-        """Write content to a file in the sandbox.
+    async def als_directory(self, directory: str = ".") -> list[dict[str, Any]]:
+        """List contents of a directory.
 
-        Args:
-            filepath: Path to file in sandbox
-            content: Content to write
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(filepath):
-                logger.error(f"Access denied: {filepath} is not in allowed directories")
-                return False
-
-            # Upload file via Daytona SDK
-            assert self.sandbox is not None
-            self.sandbox.fs.upload_file(content.encode("utf-8"), filepath)
-            logger.info(f"Wrote {len(content)} bytes to {filepath}")
-            return True
-        except (OSError, UnicodeEncodeError) as e:
-            logger.error(f"Failed to write file {filepath}: {e}")
-            return False
-
-    def list_directory(self, directory: str = ".") -> list[dict[str, Any]]:
-        """List contents of a directory with type indicators.
-
-        Args:
-            directory: Directory path (default: current directory)
-
-        Returns:
-            List of dictionaries with name and type (file/directory)
+        Returns entries as dicts with at least: name, path, is_dir.
         """
         try:
             if self.config.filesystem.enable_path_validation and not self.validate_path(directory):
@@ -1917,51 +1807,44 @@ class PTCSandbox:
                 return []
 
             assert self.sandbox is not None
-            file_infos = self.sandbox.fs.list_files(directory)
+            file_infos = await self._daytona_call(
+                self.sandbox.fs.list_files,
+                directory,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
             if not file_infos:
                 return []
 
-            results = []
-            for f in file_infos:
-                name = str(f.name) if hasattr(f, "name") else str(f)
-                is_dir = hasattr(f, "is_dir") and f.is_dir
-                results.append({
-                    "name": name,
-                    "type": "directory" if is_dir else "file",
-                    "path": f"{directory}/{name}" if directory != "." else name,
-                })
-
+            results: list[dict[str, Any]] = []
+            for entry in file_infos:
+                name = str(entry.name) if hasattr(entry, "name") else str(entry)
+                is_dir = bool(getattr(entry, "is_dir", False))
+                entry_path = f"{directory}/{name}" if directory != "." else name
+                results.append({"name": name, "path": entry_path, "is_dir": is_dir})
             return results
-        except (OSError, AttributeError) as e:
-            logger.debug(f"Error listing directory {directory}: {e}")
+        except Exception as e:
+            logger.debug("Error listing directory", directory=directory, error=str(e))
             return []
 
-    def create_directory(self, dirpath: str) -> bool:
-        """Create a directory in the sandbox.
-
-        Args:
-            dirpath: Directory path to create
-
-        Returns:
-            True if successful, False otherwise
-        """
+    async def acreate_directory(self, dirpath: str) -> bool:
+        """Create a directory in the sandbox."""
         try:
             if self.config.filesystem.enable_path_validation and not self.validate_path(dirpath):
                 logger.error(f"Access denied: {dirpath} is not in allowed directories")
                 return False
 
-            # Create directory by uploading an empty file, then deleting it
-            # This ensures parent directories are created
-            temp_file = f"{dirpath}/.gitkeep"
             assert self.sandbox is not None
-            self.sandbox.fs.upload_file(b"", temp_file)
-            logger.info(f"Created directory {dirpath}")
+            await self._daytona_call(
+                self.sandbox.process.exec,
+                f"mkdir -p {shlex.quote(dirpath)}",
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
             return True
-        except OSError as e:
-            logger.error(f"Failed to create directory {dirpath}: {e}")
+        except Exception as e:
+            logger.debug("Failed to create directory", dirpath=dirpath, error=str(e))
             return False
 
-    async def edit_file_text_async(
+    async def aedit_file_text(
         self,
         filepath: str,
         old_string: str,
@@ -1980,7 +1863,7 @@ class PTCSandbox:
                     "error": f"Access denied: {filepath} is not in allowed directories",
                 }
 
-            content = await self.read_file_text_async(filepath)
+            content = await self.aread_file_text(filepath)
             if content is None:
                 return {"success": False, "error": "File not found"}
 
@@ -2003,7 +1886,7 @@ class PTCSandbox:
             if updated == content:
                 return {"success": False, "error": "Edit produced no changes"}
 
-            write_ok = await self.write_file_text_async(filepath, updated)
+            write_ok = await self.awrite_file_text(filepath, updated)
             if not write_ok:
                 return {"success": False, "error": "Failed to write updated file"}
 
@@ -2016,137 +1899,7 @@ class PTCSandbox:
             logger.debug("Async edit_file failed", filepath=filepath, error=str(e))
             return {"success": False, "error": f"Edit operation failed: {e!s}"}
 
-    def edit_file(self, filepath: str, old_string: str, new_string: str, *, replace_all: bool = False) -> dict[str, Any]:
-        """Edit a file using exact string replacement (Claude Code standard).
-
-        Performs exact string matching (whitespace-sensitive). old_string must be
-        unique in the file unless replace_all=True.
-
-        Args:
-            filepath: Path to file (absolute)
-            old_string: The exact text to replace (must exist in file)
-            new_string: The text to replace it with (must be different from old_string)
-            replace_all: Replace all occurrences (useful for renaming)
-
-        Returns:
-            Dictionary with edit results (success, changes, message)
-        """
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(filepath):
-                return {
-                    "success": False,
-                    "error": f"Access denied: {filepath} is not in allowed directories",
-                }
-
-            # Read current content
-            content = self.read_file(filepath)
-            if content is None:
-                return {"success": False, "error": "File not found"}
-
-            # Check if old_string and new_string are different
-            if old_string == new_string:
-                return {
-                    "success": False,
-                    "error": "old_string and new_string must be different",
-                }
-
-            # Check if old_string exists
-            if old_string not in content:
-                return {
-                    "success": False,
-                    "error": f"old_string not found in file: {filepath}",
-                }
-
-            # Check uniqueness if not replace_all
-            if not replace_all:
-                occurrences = content.count(old_string)
-                if occurrences > 1:
-                    return {
-                        "success": False,
-                        "error": f"old_string appears {occurrences} times in file. Use replace_all=True to replace all occurrences, or make old_string more specific to be unique.",
-                    }
-
-            # Perform replacement
-            if replace_all:
-                new_content = content.replace(old_string, new_string)
-                occurrences = content.count(old_string)
-                message = f"Replaced {occurrences} occurrence(s) in {filepath}"
-            else:
-                new_content = content.replace(old_string, new_string, 1)
-                message = f"Successfully edited {filepath}"
-
-            # Write the edited content
-            if self.write_file(filepath, new_content):
-                return {
-                    "success": True,
-                    "changed": True,
-                    "message": message,
-                }
-            return {"success": False, "error": "Failed to write edited content"}
-
-        except (OSError, ValueError) as e:
-            logger.error(f"Failed to edit file {filepath}: {e}")
-            return {"success": False, "error": str(e)}
-
-    def search_files(self, pattern: str, directory: str = ".", exclude: list[str] | None = None) -> list[str]:
-        """Search for files matching a pattern (glob-style).
-
-        Args:
-            pattern: Glob pattern (e.g., "*.py", "**/*.txt")
-            directory: Directory to search in
-            exclude: List of patterns to exclude
-
-        Returns:
-            List of matching file paths
-        """
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(directory):
-                logger.error(f"Access denied: {directory} is not in allowed directories")
-                return []
-
-            # Simple recursive file search
-            # This is a basic implementation - production would use more sophisticated methods
-            import fnmatch
-
-            matches = []
-
-            def search_recursive(current_dir: str) -> None:
-                try:
-                    entries = self.list_directory(current_dir)
-                    for entry in entries:
-                        full_path = entry["path"]
-
-                        # Check exclusions
-                        if exclude:
-                            excluded = False
-                            for excl_pattern in exclude:
-                                if fnmatch.fnmatch(entry["name"], excl_pattern):
-                                    excluded = True
-                                    break
-                            if excluded:
-                                continue
-
-                        # Match files
-                        if entry["type"] == "file":
-                            if fnmatch.fnmatch(entry["name"], pattern):
-                                matches.append(full_path)
-
-                        # Recurse into directories
-                        elif entry["type"] == "directory":
-                            search_recursive(full_path)
-
-                except (OSError, KeyError) as e:
-                    logger.debug(f"Error searching in {current_dir}: {e}")
-
-            search_recursive(directory)
-            logger.info(f"Found {len(matches)} files matching {pattern}")
-            return matches
-
-        except (OSError, ValueError) as e:
-            logger.error(f"Failed to search files: {e}")
-            return []
-
-    async def glob_files_async(self, pattern: str, path: str = ".") -> list[str]:
+    async def aglob_files(self, pattern: str, path: str = ".") -> list[str]:
         """Async glob; safe to retry automatically."""
         try:
             if self.config.filesystem.enable_path_validation and not self.validate_path(path):
@@ -2199,79 +1952,7 @@ class PTCSandbox:
             logger.debug("Async glob failed", pattern=pattern, path=path, error=str(e))
             return []
 
-    def glob_files(self, pattern: str, path: str = ".") -> list[str]:
-        """Find files matching a glob pattern, sorted by modification time.
-
-        Uses Python's glob.glob in the sandbox for proper recursive pattern support.
-
-        Args:
-            pattern: Glob pattern (e.g., "**/*.py", "*.{js,ts}")
-            path: Directory to search in (default: ".")
-
-        Returns:
-            List of matching file paths sorted by modification time (newest first)
-        """
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(path):
-                logger.error(f"Access denied: {path} is not in allowed directories")
-                return []
-
-            # Normalize path for sandbox
-            search_path = self._normalize_search_path(path)
-
-            # Make glob recursive by default only for simple patterns (like "*.py")
-            # Don't add ** if pattern already contains a path (has "/")
-            if "**" not in pattern and "/" not in pattern:
-                pattern = f"**/{pattern}"
-
-            # Build Python code to execute glob in sandbox
-            # This properly supports ** recursive patterns and mtime sorting
-            glob_code = textwrap.dedent(f"""\
-                import glob
-                import os
-
-                pattern = "{pattern}"
-                search_path = "{search_path}"
-
-                full_pattern = os.path.join(search_path, pattern)
-                matches = glob.glob(full_pattern, recursive=True)
-                files = [f for f in matches if os.path.isfile(f)]
-
-                try:
-                    files_with_mtime = [(f, os.path.getmtime(f)) for f in files]
-                    sorted_files = sorted(files_with_mtime, key=lambda x: x[1], reverse=True)
-                    for f, _ in sorted_files:
-                        print(f)  # noqa: T201
-                except OSError as e:
-                    for f in files:
-                        print(f)  # noqa: T201
-            """)
-
-            # Encode as base64 to safely pass multi-line code to shell
-            encoded_code = base64.b64encode(glob_code.encode()).decode()
-            cmd = f'python3 -c "import base64; exec(base64.b64decode(\'{encoded_code}\').decode())"'
-
-            # Execute in sandbox
-            assert self.sandbox is not None
-            result = self.sandbox.process.exec(cmd, timeout=30)
-
-            # Parse output
-            output = result.result.strip() if result.result else ""
-
-            if not output:
-                logger.info(f"Found 0 files matching {pattern}")
-                return []
-
-            matches = output.split("\n")
-            logger.info(f"Found {len(matches)} files matching {pattern}")
-            return matches
-
-        except (OSError, ValueError, AttributeError) as e:
-            logger.error(f"Failed to glob files: {e}")
-            # Fallback to search_files if glob execution fails
-            return self.search_files(pattern, path)
-
-    async def grep_content_async(
+    async def agrep_content(
         self,
         pattern: str,
         path: str = ".",
@@ -2368,336 +2049,27 @@ class PTCSandbox:
             logger.debug("Async grep failed", pattern=pattern, path=path, error=str(e))
             return []
 
-    def grep_content(
-        self,
-        pattern: str,
-        path: str = ".",
-        output_mode: str = "files_with_matches",
-        glob: str | None = None,
-        type: str | None = None,  # noqa: A002 - matches ripgrep's --type flag
-        *,
-        case_insensitive: bool = False,
-        show_line_numbers: bool = True,
-        lines_after: int | None = None,
-        lines_before: int | None = None,
-        lines_context: int | None = None,
-        multiline: bool = False,
-        head_limit: int | None = None,
-        offset: int = 0,
-    ) -> Any:
-        """Search file contents using ripgrep for high performance.
-
-        Args:
-            pattern: Regular expression pattern to search
-            path: File or directory to search in
-            output_mode: "files_with_matches", "content", or "count"
-            glob: Filter files by glob pattern
-            type: Filter by file type (e.g., "py", "js", "ts") - matches rg --type
-            case_insensitive: Case insensitive search
-            show_line_numbers: Show line numbers in content mode
-            lines_after: Lines to show after match
-            lines_before: Lines to show before match
-            lines_context: Lines to show before and after match
-            multiline: Enable multiline mode
-            head_limit: Limit output to first N results
-            offset: Skip first N results
-
-        Returns:
-            Search results based on output_mode
-        """
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(path):
-                logger.error(f"Access denied: {path} is not in allowed directories")
-                return []
-
-            # Build ripgrep command
-            cmd = ["rg"]
-
-            # Output mode flags
-            if output_mode == "files_with_matches":
-                cmd.append("-l")
-            elif output_mode == "count":
-                cmd.append("-c")
-            # "content" is default mode for rg
-
-            # Case sensitivity
-            if case_insensitive:
-                cmd.append("-i")
-
-            # Line numbers (only for content mode)
-            if output_mode == "content" and show_line_numbers:
-                cmd.append("-n")
-
-            # Context lines
-            if lines_before:
-                cmd.extend(["-B", str(lines_before)])
-            if lines_after:
-                cmd.extend(["-A", str(lines_after)])
-            if lines_context:
-                cmd.extend(["-C", str(lines_context)])
-
-            # Multiline mode
-            if multiline:
-                cmd.extend(["-U", "--multiline-dotall"])
-
-            # File filtering
-            if glob:
-                cmd.extend(["--glob", glob])
-
-            if type:
-                cmd.extend(["--type", type])
-
-            # Add pattern and path
-            cmd.append(pattern)
-
-            # Normalize path for sandbox
-            search_path = self._normalize_search_path(path)
-            cmd.append(search_path)
-
-            # Execute ripgrep command
-            cmd_str = " ".join(f'"{c}"' if " " in c else c for c in cmd)
-            logger.debug(f"Executing ripgrep: {cmd_str}")
-
-            assert self.sandbox is not None
-            result = self.sandbox.process.exec(cmd_str, timeout=60)
-
-            # Parse output
-            output = result.result.strip() if result.result else ""
-
-            if not output:
-                logger.info(f"Grep found 0 results for pattern {pattern}")
-                return []
-
-            if output_mode == "count":
-                # ripgrep count format: filename:count
-                count_results: list[tuple[str, int]] = []
-                for line in output.split("\n"):
-                    if ":" in line:
-                        parts = line.rsplit(":", 1)
-                        if len(parts) == 2:
-                            try:
-                                count_results.append((parts[0], int(parts[1])))
-                            except ValueError:
-                                count_results.append((line, 0))
-                    else:
-                        count_results.append((line, 0))
-
-                if offset > 0:
-                    count_results = count_results[offset:]
-                if head_limit:
-                    count_results = count_results[:head_limit]
-
-                logger.info(f"Grep found {len(count_results)} results for pattern {pattern}")
-                return count_results
-
-            # "files_with_matches" and "content" modes both return strings
-            results_strs = output.split("\n")
-
-            if offset > 0:
-                results_strs = results_strs[offset:]
-            if head_limit:
-                results_strs = results_strs[:head_limit]
-
-            logger.info(f"Grep found {len(results_strs)} results for pattern {pattern}")
-            return results_strs
-
-        except (OSError, ValueError) as e:
-            logger.error(f"Failed to grep content: {e}")
-            # Fallback to Python-based grep if ripgrep fails
-            return self._grep_content_fallback(
-                pattern=pattern,
-                path=path,
-                output_mode=output_mode,
-                glob=glob,
-                type=type,
-                case_insensitive=case_insensitive,
-                show_line_numbers=show_line_numbers,
-                lines_after=lines_after,
-                lines_before=lines_before,
-                lines_context=lines_context,
-                multiline=multiline,
-                head_limit=head_limit,
-                offset=offset,
-            )
-
-    def _grep_content_fallback(
-        self,
-        pattern: str,
-        path: str = ".",
-        output_mode: str = "files_with_matches",
-        glob: str | None = None,
-        type: str | None = None,  # noqa: A002 - matches ripgrep's --type flag
-        *,
-        case_insensitive: bool = False,
-        show_line_numbers: bool = True,
-        lines_after: int | None = None,
-        lines_before: int | None = None,
-        lines_context: int | None = None,
-        multiline: bool = False,
-        head_limit: int | None = None,
-        offset: int = 0,
-    ) -> Any:
-        """Fallback Python-based grep if ripgrep is unavailable."""
-        try:
-            import re
-
-            # Compile regex pattern
-            flags = re.IGNORECASE if case_insensitive else 0
-            if multiline:
-                flags |= re.MULTILINE | re.DOTALL
-            try:
-                regex = re.compile(pattern, flags)
-            except re.error as e:
-                logger.error(f"Invalid regex pattern in grep_content fallback: {e}")
-                return []
-
-            # Find files to search
-            files = self.search_files(glob or "*", path)
-
-            # Filter by type if specified
-            if type:
-                type_extensions: dict[str, str | list[str]] = {
-                    "py": ".py",
-                    "js": ".js",
-                    "ts": ".ts",
-                    "rust": ".rs",
-                    "go": ".go",
-                    "java": ".java",
-                    "cpp": [".cpp", ".cc", ".cxx", ".h", ".hpp"],
-                    "json": ".json",
-                    "yaml": [".yaml", ".yml"],
-                    "md": ".md",
-                }
-                if type in type_extensions:
-                    ext = type_extensions[type]
-                    if isinstance(ext, list):
-                        ext_tuple = tuple(ext)
-                        files = [f for f in files if f.endswith(ext_tuple)]
-                    else:
-                        files = [f for f in files if f.endswith(ext)]
-
-            results_files: list[str] = []
-            results_counts: list[tuple[str, int]] = []
-            results_content: list[str] = []
-
-            # Search each file
-            for file_path in files:
-                try:
-                    content = self.read_file(file_path)
-                    if content is None:
-                        continue
-
-                    if output_mode == "files_with_matches":
-                        if regex.search(content):
-                            results_files.append(file_path)
-
-                    elif output_mode == "count":
-                        matches = regex.findall(content)
-                        if matches:
-                            results_counts.append((file_path, len(matches)))
-
-                    elif output_mode == "content":
-                        lines = content.splitlines()
-                        for i, line in enumerate(lines):
-                            if regex.search(line):
-                                # Build context
-                                context_before = lines_before or lines_context or 0
-                                context_after = lines_after or lines_context or 0
-
-                                start = max(0, i - context_before)
-                                end = min(len(lines), i + context_after + 1)
-
-                                context_lines = []
-                                for j in range(start, end):
-                                    prefix = f"{file_path}:" if show_line_numbers else ""
-                                    line_num = f"{j+1}:" if show_line_numbers else ""
-                                    marker = ">" if j == i else " "
-                                    context_lines.append(f"{prefix}{line_num}{marker}{lines[j]}")
-
-                                results_content.append("\n".join(context_lines))
-
-                except (OSError, UnicodeDecodeError) as e:
-                    logger.debug(f"Error searching file {file_path}: {e}")
-                    continue
-
-            if output_mode == "count":
-                if offset > 0:
-                    results_counts = results_counts[offset:]
-                if head_limit:
-                    results_counts = results_counts[:head_limit]
-                logger.info(f"Grep fallback found {len(results_counts)} results for pattern {pattern}")
-                return results_counts
-
-            results_strs = results_files if output_mode == "files_with_matches" else results_content
-            if offset > 0:
-                results_strs = results_strs[offset:]
-            if head_limit:
-                results_strs = results_strs[:head_limit]
-
-            logger.info(f"Grep fallback found {len(results_strs)} results for pattern {pattern}")
-            return results_strs
-
-        except (OSError, ValueError, ImportError) as e:
-            logger.error(f"Failed to grep content (fallback): {e}")
-            return []
-
-    def read_file_range(self, file_path: str, offset: int = 1, limit: int = 2000) -> str | None:
-        """Read a specific range of lines from a file.
-
-        Args:
-            file_path: Path to the file
-            offset: Line number to start from (1-indexed, default: 1 = first line)
-            limit: Number of lines to read
-
-        Returns:
-            File content for the specified range, or None if file not found
-        """
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(file_path):
-                logger.error(f"Access denied: {file_path} is not in allowed directories")
-                return None
-
-            # Read full file content
-            content = self.read_file(file_path)
-            if content is None:
-                return None
-
-            # Split into lines and extract range
-            # Convert 1-indexed offset to 0-indexed for slicing
-            lines = content.splitlines()
-            start = max(0, offset - 1)
-            end = start + limit
-
-            selected_lines = lines[start:end]
-            result = "\n".join(selected_lines)
-
-            logger.info(
-                "Read file range",
-                file_path=file_path,
-                offset=offset,
-                limit=limit,
-                lines_read=len(selected_lines),
-            )
-
-            return result
-
-        except (OSError, ValueError) as e:
-            logger.error(f"Failed to read file range: {e}")
-            return None
-
     async def cleanup(self) -> None:
         """Clean up and destroy the sandbox."""
         logger.info("Cleaning up sandbox", sandbox_id=self.sandbox_id)
 
         if self.sandbox:
             try:
-                await self._run_sync(self.sandbox.delete)
+                await self._daytona_call(
+                    self.sandbox.delete,
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                )
                 logger.info("Sandbox deleted", sandbox_id=self.sandbox_id)
             except OSError as e:
                 logger.error(f"Error deleting sandbox: {e}")
 
         self.sandbox = None
         self.sandbox_id = None
+
+        try:
+            await self.daytona_client.close()
+        except Exception as e:
+            logger.debug("Failed to close Daytona client", error=str(e))
 
     async def __aenter__(self) -> "PTCSandbox":
         """Async context manager entry."""

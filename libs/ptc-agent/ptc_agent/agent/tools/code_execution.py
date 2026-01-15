@@ -1,6 +1,5 @@
 """Execute code tool for running Python code in the PTC sandbox."""
 
-import asyncio
 import base64
 import binascii
 from pathlib import Path
@@ -97,7 +96,8 @@ def create_execute_code_tool(sandbox: Any, mcp_registry: Any) -> BaseTool:
                             if ext in IMAGE_EXTENSIONS:
                                 try:
                                     # Download from sandbox
-                                    file_bytes = await asyncio.to_thread(sandbox.download_file_bytes, file_str)
+                                    sandbox_path = sandbox.normalize_path(file_str)
+                                    file_bytes = await sandbox.adownload_file_bytes(sandbox_path)
                                     if file_bytes:
                                         # Upload to cloud storage
                                         filename = Path(file_str).name
@@ -113,27 +113,28 @@ def create_execute_code_tool(sandbox: Any, mcp_registry: Any) -> BaseTool:
                     # LLMs sometimes use absolute paths despite prompt instructions
                     if not uploaded_images:
                         try:
-                            # Call Daytona SDK directly to avoid debug log in list_directory
-                            # (list_directory logs at debug level when directory doesn't exist)
-                            root_results_raw = await asyncio.to_thread(sandbox.sandbox.fs.list_files, "/results")
-                            root_results = [
-                                {"name": str(f.name) if hasattr(f, "name") else str(f)}
-                                for f in (root_results_raw or [])
-                            ]
-                            for file_info in root_results:
-                                file_name = file_info.get("name", "")
+                            # Call Daytona SDK directly to bypass path validation.
+                            # LLMs sometimes use absolute /results despite prompt instructions.
+                            assert sandbox.sandbox is not None
+                            root_results_raw = await sandbox.sandbox.fs.list_files("/results")
+                            for f in root_results_raw or []:
+                                file_name = str(f.name) if hasattr(f, "name") else str(f)
                                 ext = Path(file_name).suffix.lower()
-                                if ext in IMAGE_EXTENSIONS:
-                                    try:
-                                        file_bytes = await asyncio.to_thread(sandbox.download_file_bytes, f"/results/{file_name}")
-                                        if file_bytes:
-                                            storage_key = f"charts/{result.execution_id}/{file_name}"
-                                            if upload_bytes(storage_key, file_bytes):
-                                                url = get_public_url(storage_key)
-                                                uploaded_images.append(f"![{file_name}]({url})")
-                                                logger.info(f"Uploaded image from /results/ fallback: {storage_key}")
-                                    except (OSError, ValueError) as e:
-                                        logger.error(f"Failed to upload /results/{file_name}: {e}")
+                                if ext not in IMAGE_EXTENSIONS:
+                                    continue
+
+                                try:
+                                    file_bytes = await sandbox.sandbox.fs.download_file(f"/results/{file_name}")
+                                    if not file_bytes:
+                                        continue
+
+                                    storage_key = f"charts/{result.execution_id}/{file_name}"
+                                    if upload_bytes(storage_key, file_bytes):
+                                        url = get_public_url(storage_key)
+                                        uploaded_images.append(f"![{file_name}]({url})")
+                                        logger.info(f"Uploaded image from /results/ fallback: {storage_key}")
+                                except Exception as e:
+                                    logger.debug("Failed to upload /results fallback image", file_name=file_name, error=str(e))
                         except Exception:  # noqa: S110 - /results/ fallback should fail silently
                             pass
 

@@ -1,14 +1,23 @@
-"""Daytona Backend - Implements deepagent SandboxBackendProtocol for Daytona sandbox.
+"""Daytona backend for deepagents FilesystemMiddleware.
 
-This backend delegates all filesystem and execution operations to PTCSandbox,
-enabling deepagent's built-in tools to work with Daytona sandboxes.
+This backend bridges deepagents' BackendProtocol and SandboxBackendProtocol to `PTCSandbox`.
+
+Naming convention:
+- Async methods are prefixed with `a` (e.g. `aread`, `aglob_info`).
+
+Design choice:
+- We intentionally do not support the synchronous protocol methods here. `PTCSandbox`
+  is async-native and depends on an active event loop; sync wrappers tend to be
+  brittle and encourage accidental blocking.
 """
 
+from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import structlog
-from deepagents.backends.protocol import EditResult, FileDownloadResponse, FileUploadResponse, WriteResult
+from deepagents.backends.protocol import EditResult, ExecuteResponse, FileDownloadResponse, FileUploadResponse, WriteResult
 
 from ptc_agent.core.sandbox import PTCSandbox
 
@@ -16,41 +25,28 @@ logger = structlog.get_logger(__name__)
 
 
 class DaytonaBackend:
-    """Backend that implements deepagent's SandboxBackendProtocol using Daytona.
-
-    Provides a unified interface for deepagent's FilesystemMiddleware to interact
-    with Daytona sandboxes. All operations are delegated to PTCSandbox.
-    """
+    """deepagents backend implementation backed by `PTCSandbox`."""
 
     def __init__(self, sandbox: PTCSandbox, root_dir: str = "/home/daytona", *, virtual_mode: bool = True) -> None:
-        """Initialize Daytona backend.
+        """Create a new DaytonaBackend.
 
         Args:
-            sandbox: PTCSandbox instance for all operations
-            root_dir: Root directory for virtual filesystem (default: /workspace)
-            virtual_mode: If True, normalize paths relative to root_dir
+            sandbox: Initialized `PTCSandbox` instance.
+            root_dir: Root directory used when resolving virtual paths.
+            virtual_mode: If True, treat non-absolute paths as relative to `root_dir`.
         """
         self.sandbox = sandbox
         self.root_dir = root_dir.rstrip("/")
         self.virtual_mode = virtual_mode
         logger.info("Initialized DaytonaBackend", root_dir=self.root_dir, virtual_mode=self.virtual_mode)
 
+    @property
+    def id(self) -> str:
+        """Return a stable identifier for this backend instance."""
+        return self.sandbox.sandbox_id or "unknown"
+
     def _normalize_path(self, path: str) -> str:
-        """Normalize path relative to root_dir when virtual_mode is enabled.
-
-        Converts virtual paths to absolute sandbox paths:
-            "/" -> "/home/daytona"
-            "/research_request.md" -> "/home/daytona/research_request.md"
-            "." -> "/home/daytona"
-            "data/file.txt" -> "/home/daytona/data/file.txt"
-            "/home/daytona/file.txt" -> "/home/daytona/file.txt" (unchanged)
-
-        Args:
-            path: Path to normalize
-
-        Returns:
-            Normalized absolute path
-        """
+        """Normalize a path into an absolute sandbox path."""
         if not self.virtual_mode:
             return path
 
@@ -59,404 +55,233 @@ class DaytonaBackend:
 
         path = path.strip()
 
-        # Already absolute and in allowed directories - keep as is
+        # Already absolute in sandbox
         if path.startswith(("/home/daytona", "/tmp")):
             return path
 
-        # Virtual absolute path: /foo -> /home/daytona/foo
         if path.startswith("/"):
             return f"{self.root_dir}{path}"
 
-        # Relative path: foo -> /home/daytona/foo
         return f"{self.root_dir}/{path}"
 
-    def ls_info(self, path: str = ".") -> list[dict]:
-        """List directory contents with file information.
+    def _format_cat_n(self, lines: list[str], *, start_line_number: int) -> str:
+        """Format lines using `cat -n`-style numbering."""
+        return "\n".join(f"{i:6}\t{line}" for i, line in enumerate(lines, start=start_line_number))
 
-        Args:
-            path: Directory path to list
+    # ---------------------------------------------------------------------
+    # Sync protocol methods (unsupported)
+    # ---------------------------------------------------------------------
 
-        Returns:
-            List of FileInfo dicts with path (required), is_dir, size, modified_at
+    def ls_info(self, path: str = ".") -> list[dict]:  # pragma: no cover
+        """List directory contents (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
         """
-        try:
-            normalized_path = self._normalize_path(path)
-            entries = self.sandbox.list_directory(normalized_path)
-            result = []
-            for entry in entries:
-                if isinstance(entry, dict):
-                    file_info = {
-                        "path": entry.get("path") or entry.get("name", ""),
-                        "is_dir": entry.get("is_dir", entry.get("type") == "directory"),
-                    }
-                    if "size" in entry:
-                        file_info["size"] = entry["size"]
-                    if "modified_at" in entry:
-                        file_info["modified_at"] = entry["modified_at"]
-                    result.append(file_info)
-                else:
-                    # If entry is a string, treat as path
-                    result.append({"path": str(entry)})
-            return result
-        except (OSError, FileNotFoundError, PermissionError, ValueError) as e:
-            # Return empty list if directory doesn't exist or is inaccessible.
-            # This is expected for skills directories that haven't been created yet.
-            logger.debug("ls_info failed", path=path, error=str(e))
-            return []
-        except Exception:
-            logger.exception("Unexpected error in ls_info", path=path)
-            return []
+        raise RuntimeError("DaytonaBackend is async-native; use als_info()")
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:  # pragma: no cover
+        """Read a file (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use aread()")
+
+    def write(self, file_path: str, content: str) -> WriteResult:  # pragma: no cover
+        """Write a file (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use awrite()")
+
+    def edit(self, file_path: str, old_string: str, new_string: str, *, replace_all: bool = False) -> EditResult:  # pragma: no cover
+        """Edit a file (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use aedit()")
+
+    def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict] | str:  # pragma: no cover
+        """Search for pattern matches (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use agrep_raw()")
+
+    def glob_info(self, pattern: str, path: str = "/") -> list[dict]:  # pragma: no cover
+        """Return glob matches (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use aglob_info()")
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:  # pragma: no cover
+        """Upload files (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use aupload_files()")
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:  # pragma: no cover
+        """Download files (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use adownload_files()")
+
+    def execute(self, command: str) -> ExecuteResponse:  # pragma: no cover
+        """Execute a shell command (sync).
+
+        Raises:
+            RuntimeError: Always, because this backend is async-native.
+        """
+        raise RuntimeError("DaytonaBackend is async-native; use aexecute()")
+
+    # ---------------------------------------------------------------------
+    # Async protocol methods
+    # ---------------------------------------------------------------------
 
     async def als_info(self, path: str = ".") -> list[dict]:
-        """Async version of ls_info.
-
-        Required by BackendProtocol for SkillsMiddleware.
-        """
-        return await asyncio.to_thread(self.ls_info, path)
-
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
-        """Read file content with optional range.
-
-        Args:
-            file_path: Path to file
-            offset: Line number to start from (0-indexed)
-            limit: Number of lines to read
-
-        Returns:
-            File content with line numbers, or error string if file not found
-        """
-        try:
-            normalized_path = self._normalize_path(file_path)
-            if offset > 0 or limit != 2000:
-                content = self.sandbox.read_file_range(normalized_path, offset, limit)
-            else:
-                content = self.sandbox.read_file(normalized_path)
-
-            if content is None:
-                return f"Error: File '{file_path}' not found"
-            return content
-        except (OSError, FileNotFoundError, PermissionError):
-            logger.exception(f"Failed to read file {file_path}")
-            return f"Error: File '{file_path}' not found"
+        """Async directory listing."""
+        normalized_path = self._normalize_path(path)
+        entries = await self.sandbox.als_directory(normalized_path)
+        return [{"path": e.get("path", ""), "is_dir": bool(e.get("is_dir", False))} for e in entries]
 
     async def aread(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
-        """Async version of read."""
-        return await asyncio.to_thread(self.read, file_path, offset, limit)
+        """Async file read in cat -n format."""
+        normalized_path = self._normalize_path(file_path)
+        content = await self.sandbox.aread_file_text(normalized_path)
+        if content is None:
+            return f"Error: File '{file_path}' not found"
 
-    def write(self, file_path: str, content: str) -> WriteResult:
-        """Write content to file.
+        lines = content.splitlines()
+        window = lines[offset : offset + limit]
+        return self._format_cat_n(window, start_line_number=offset + 1)
 
-        Args:
-            file_path: Path to file
-            content: Content to write
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        """Async file write (overwrite)."""
+        normalized_path = self._normalize_path(file_path)
+        ok = await self.sandbox.awrite_file_text(normalized_path, content)
+        if ok:
+            return WriteResult(path=normalized_path, files_update=None)
+        return WriteResult(error=f"Failed to write to '{normalized_path}'")
 
-        Returns:
-            WriteResult with path on success, error on failure
-        """
-        try:
-            normalized_path = self._normalize_path(file_path)
-            success = self.sandbox.write_file(normalized_path, content)
-            if success:
-                # files_update=None for external backends (not state-based)
-                return WriteResult(path=normalized_path, files_update=None)
-            return WriteResult(error=f"Failed to write to '{normalized_path}'")
-        except (OSError, PermissionError) as e:
-            logger.exception(f"Failed to write file {file_path}")
-            return WriteResult(error=str(e))
+    async def aedit(self, file_path: str, old_string: str, new_string: str, *, replace_all: bool = False) -> EditResult:
+        """Async exact-string edit."""
+        normalized_path = self._normalize_path(file_path)
+        result = await self.sandbox.aedit_file_text(
+            normalized_path,
+            old_string,
+            new_string,
+            replace_all=replace_all,
+        )
+        if result.get("success"):
+            return EditResult(path=normalized_path, files_update=None, occurrences=int(result.get("occurrences", 1)))
+        return EditResult(error=str(result.get("error", "Edit failed")))
 
-    def edit(
-        self,
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        *,
-        replace_all: bool = False
-    ) -> EditResult:
-        """Edit file using exact string replacement.
-
-        Args:
-            file_path: Path to file
-            old_string: Text to replace
-            new_string: Replacement text
-            replace_all: Replace all occurrences
-
-        Returns:
-            EditResult with path and occurrences on success, error on failure
-        """
-        try:
-            normalized_path = self._normalize_path(file_path)
-            result = self.sandbox.edit_file(normalized_path, old_string, new_string, replace_all=replace_all)
-            if isinstance(result, dict):
-                if result.get("success"):
-                    return EditResult(
-                        path=normalized_path,
-                        files_update=None,  # External backend, not state-based
-                        occurrences=result.get("occurrences", 1)
-                    )
-                return EditResult(error=result.get("error", "Edit failed"))
-            # If result is not a dict, assume success
-            return EditResult(path=normalized_path, files_update=None, occurrences=1)
-        except (OSError, FileNotFoundError, PermissionError, ValueError) as e:
-            logger.exception(f"Failed to edit file {file_path}")
-            return EditResult(error=str(e))
-
-    async def aedit(
-        self,
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        *,
-        replace_all: bool = False,
-    ) -> EditResult:
-        """Async version of edit."""
-        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all=replace_all)
-
-    def grep_raw(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-    ) -> list[dict]:
-        """Search file contents with regex pattern.
-
-        Args:
-            pattern: Regex pattern to search
-            path: Path to search in (default: working directory)
-            glob: File pattern filter (e.g., "*.py")
-
-        Returns:
-            List of GrepMatch dicts with path, line, text, or error string
-        """
-        try:
-            search_path = self._normalize_path(path) if path else self.root_dir
-            result = self.sandbox.grep_content(
-                pattern=pattern,
-                path=search_path,
-                output_mode="content",  # Get full content to extract matches
-                glob=glob,
-                show_line_numbers=True,
-            )
-
-            # Convert to GrepMatch format: list of {path, line, text}
-            if isinstance(result, str):
-                # Parse string output into GrepMatch dicts
-                matches = []
-                for line in result.strip().split("\n"):
-                    if line and ":" in line:
-                        # Format: "path:line:text"
-                        parts = line.split(":", 2)
-                        if len(parts) >= 3:
-                            try:
-                                matches.append({
-                                    "path": parts[0],
-                                    "line": int(parts[1]),
-                                    "text": parts[2]
-                                })
-                            except ValueError:
-                                # If line number parsing fails, include as text
-                                matches.append({
-                                    "path": parts[0],
-                                    "line": 0,
-                                    "text": ":".join(parts[1:])
-                                })
-                return matches
-            if isinstance(result, list):
-                # Already in list format - could be strings or dicts
-                matches = []
-                for m in result:
-                    if isinstance(m, str):
-                        # Parse string format "path:line:text"
-                        if ":" in m:
-                            parts = m.split(":", 2)
-                            if len(parts) >= 3:
-                                try:
-                                    matches.append({
-                                        "path": parts[0],
-                                        "line": int(parts[1]),
-                                        "text": parts[2]
-                                    })
-                                except ValueError:
-                                    matches.append({
-                                        "path": parts[0],
-                                        "line": 0,
-                                        "text": ":".join(parts[1:])
-                                    })
-                    elif isinstance(m, dict):
-                        # Already GrepMatch dict format
-                        matches.append({
-                            "path": m.get("path", ""),
-                            "line": m.get("line", 0),
-                            "text": m.get("text", "")
-                        })
-                return matches
-            return []
-        except (OSError, ValueError):
-            logger.exception("Failed to grep content")
-            return []  # Return empty list on error for type consistency
-
-    def glob_info(self, pattern: str, path: str = "/") -> list[dict]:
-        """Find files matching glob pattern.
-
-        Args:
-            pattern: Glob pattern (e.g., "**/*.py")
-            path: Directory to search in
-
-        Returns:
-            List of FileInfo dicts with path (required), and optionally is_dir, size, modified_at
-        """
-        try:
-            normalized_path = self._normalize_path(path)
-            file_paths = self.sandbox.glob_files(pattern, normalized_path)
-            # Convert to FileInfo format
-            return [{"path": fp} for fp in file_paths]
-        except (OSError, ValueError):
-            logger.exception("Failed to glob files")
+    def _parse_grep_matches(self, raw: Any) -> list[dict]:
+        """Parse sandbox grep output into deepagents GrepMatch dicts."""
+        if not raw:
             return []
 
-    async def execute(self, code: str, timeout: int | None = None) -> dict:
-        """Execute Python code in sandbox.
+        matches: list[dict] = []
+        raw_items: list[Any]
+        if isinstance(raw, str):
+            raw_items = [line for line in raw.strip().split("\n") if line]
+        elif isinstance(raw, list):
+            raw_items = raw
+        else:
+            return []
 
-        Args:
-            code: Python code to execute
-            timeout: Execution timeout in seconds
+        for item in raw_items:
+            if not item:
+                continue
+            if isinstance(item, dict):
+                matches.append(
+                    {
+                        "path": item.get("path", ""),
+                        "line": int(item.get("line", 0) or 0),
+                        "text": item.get("text", ""),
+                    }
+                )
+                continue
 
-        Returns:
-            Dict with success, stdout, stderr
-        """
-        try:
-            result = await self.sandbox.execute(code, timeout)
-            return {
-                "success": result.success,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "execution_id": result.execution_id,
-                "files_created": result.files_created,
-            }
-        except Exception as e:
-            logger.exception("Failed to execute code")
-            return {
-                "success": False,
-                "stdout": "",
-                "stderr": str(e),
-            }
+            if isinstance(item, str) and ":" in item:
+                parts = item.split(":", 2)
+                if len(parts) >= 3:
+                    try:
+                        line_no = int(parts[1])
+                        text = parts[2]
+                    except ValueError:
+                        line_no = 0
+                        text = ":".join(parts[1:])
+                    matches.append({"path": parts[0], "line": line_no, "text": text})
+        return matches
 
-    async def execute_bash(
-        self,
-        command: str,
-        working_dir: str = "/workspace",
-        timeout: int = 60
-    ) -> dict:
-        """Execute bash command in sandbox.
+    async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict] | str:
+        """Async grep using `PTCSandbox.agrep_content` and return structured matches."""
+        search_path = self._normalize_path(path) if path else self.root_dir
+        raw = await self.sandbox.agrep_content(
+            pattern=pattern,
+            path=search_path,
+            output_mode="content",
+            glob=glob,
+            show_line_numbers=True,
+        )
+        return self._parse_grep_matches(raw)
 
-        Args:
-            command: Bash command to execute
-            working_dir: Working directory
-            timeout: Command timeout in seconds
-
-        Returns:
-            Dict with success, stdout, stderr, exit_code
-        """
-        try:
-            return await self.sandbox.execute_bash_command(
-                command=command,
-                working_dir=working_dir,
-                timeout=timeout
-            )
-        except Exception as e:
-            logger.exception("Failed to execute bash command")
-            return {
-                "success": False,
-                "stdout": "",
-                "stderr": str(e),
-                "exit_code": -1,
-            }
-
-    def create_directory(self, dirpath: str) -> bool:
-        """Create a directory.
-
-        Args:
-            dirpath: Directory path to create
-
-        Returns:
-            True if successful
-        """
-        try:
-            normalized_path = self._normalize_path(dirpath)
-            return self.sandbox.create_directory(normalized_path)
-        except (OSError, PermissionError):
-            logger.exception(f"Failed to create directory {dirpath}")
-            return False
-
-    def get_work_dir(self) -> str:
-        """Get the sandbox working directory.
-
-        Returns:
-            Working directory path
-        """
-        if self.sandbox.sandbox:
-            return self.sandbox.sandbox.get_work_dir()
-        return "/workspace"
-
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download multiple files from sandbox.
-
-        Required by BackendProtocol for SkillsMiddleware.
-
-        Args:
-            paths: List of file paths to download
-
-        Returns:
-            List of FileDownloadResponse objects with content or error
-        """
-        responses = []
-        for path in paths:
-            try:
-                normalized = self._normalize_path(path)
-                content = self.sandbox.download_file_bytes(normalized)
-                if content is not None:
-                    responses.append(FileDownloadResponse(path=path, content=content))
-                else:
-                    responses.append(FileDownloadResponse(path=path, error="file_not_found"))
-            except Exception:
-                logger.exception(f"Failed to download file {path}")
-                responses.append(FileDownloadResponse(path=path, error="file_not_found"))
-        return responses
+    async def aglob_info(self, pattern: str, path: str = "/") -> list[dict]:
+        """Async glob returning FileInfo dicts."""
+        normalized_path = self._normalize_path(path)
+        file_paths = await self.sandbox.aglob_files(pattern, normalized_path)
+        return [{"path": fp} for fp in file_paths]
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Async version of download_files.
+        """Async batch download."""
 
-        Required by BackendProtocol for SkillsMiddleware.
-        """
-        return await asyncio.to_thread(self.download_files, paths)
+        async def _download_one(p: str) -> FileDownloadResponse:
+            normalized = self._normalize_path(p)
+            try:
+                content = await self.sandbox.adownload_file_bytes(normalized)
+                if content is None:
+                    return FileDownloadResponse(path=p, error="file_not_found")
+                return FileDownloadResponse(path=p, content=content)
+            except Exception:
+                logger.exception("Failed to download file", path=p)
+                return FileDownloadResponse(path=p, error="file_not_found")
+
+        return await asyncio.gather(*[_download_one(p) for p in paths])
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Async version of upload_files.
+        """Async batch upload."""
 
-        Required by BackendProtocol for SkillsMiddleware.
-        """
-        return await asyncio.to_thread(self.upload_files, files)
-
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload multiple files to sandbox.
-
-        Required by BackendProtocol for SkillsMiddleware.
-
-        Args:
-            files: List of (path, content) tuples to upload
-
-        Returns:
-            List of FileUploadResponse objects with success or error
-        """
-        responses = []
-        for path, content in files:
+        async def _upload_one(path: str, content: bytes) -> FileUploadResponse:
+            normalized = self._normalize_path(path)
             try:
-                normalized = self._normalize_path(path)
-                success = self.sandbox.upload_file_bytes(normalized, content)
-                if success:
-                    responses.append(FileUploadResponse(path=path))
-                else:
-                    responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                ok = await self.sandbox.aupload_file_bytes(normalized, content)
+                if ok:
+                    return FileUploadResponse(path=path)
+                return FileUploadResponse(path=path, error="permission_denied")
             except Exception:
-                logger.exception(f"Failed to upload file {path}")
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
-        return responses
+                logger.exception("Failed to upload file", path=path)
+                return FileUploadResponse(path=path, error="permission_denied")
+
+        return await asyncio.gather(*[_upload_one(p, c) for p, c in files])
+
+    async def aexecute(self, command: str) -> ExecuteResponse:
+        """Execute a shell command in the sandbox."""
+        try:
+            res = await self.sandbox.execute_bash_command(command=command, working_dir=self.root_dir, timeout=60)
+            output = (res.get("stdout") or "") + (res.get("stderr") or "")
+            exit_code = int(res.get("exit_code") or 0)
+            return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+        except Exception as e:
+            logger.exception("Failed to execute command")
+            return ExecuteResponse(output=str(e), exit_code=1, truncated=False)

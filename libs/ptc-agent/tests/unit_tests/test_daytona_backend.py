@@ -1,6 +1,6 @@
 """Tests for DaytonaBackend."""
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -17,26 +17,22 @@ def mock_sandbox():
     return sandbox
 
 
+@pytest.mark.asyncio
 class TestDaytonaBackendGrepRaw:
-    """Tests for DaytonaBackend.grep_raw() method."""
+    """Tests for DaytonaBackend.agrep_raw() output parsing."""
 
-    def test_grep_raw_with_string_list_result(self, mock_sandbox):
-        """Test grep_raw when sandbox returns list of strings (ripgrep output).
-
-        This is the bug case - grep_content() returns list of strings like:
-        ["/path/file.py:10:matching line text", "/path/file2.py:20:another match"]
-
-        Previously this would fail with: 'str' object has no attribute 'get'
-        """
-        mock_sandbox.grep_content = Mock(return_value=[
-            "/home/daytona/file1.py:10:def hello():",
-            "/home/daytona/file2.py:25:def world():"
-        ])
+    async def test_grep_raw_with_string_list_result(self, mock_sandbox):
+        mock_sandbox.agrep_content = AsyncMock(
+            return_value=[
+                "/home/daytona/file1.py:10:def hello():",
+                "/home/daytona/file2.py:25:def world():",
+            ]
+        )
 
         backend = DaytonaBackend(mock_sandbox)
-        result = backend.grep_raw("def ", "/")
+        result = await backend.agrep_raw("def ", "/")
+        assert isinstance(result, list)
 
-        # Should parse strings into GrepMatch dicts
         assert len(result) == 2
         assert result[0]["path"] == "/home/daytona/file1.py"
         assert result[0]["line"] == 10
@@ -45,80 +41,74 @@ class TestDaytonaBackendGrepRaw:
         assert result[1]["line"] == 25
         assert result[1]["text"] == "def world():"
 
-    def test_grep_raw_with_string_result(self, mock_sandbox):
-        """Test grep_raw when sandbox returns a single string."""
-        mock_sandbox.grep_content = Mock(return_value="/home/daytona/file.py:5:match line")
+    async def test_grep_raw_with_string_result(self, mock_sandbox):
+        mock_sandbox.agrep_content = AsyncMock(return_value="/home/daytona/file.py:5:match line")
 
         backend = DaytonaBackend(mock_sandbox)
-        result = backend.grep_raw("match", "/")
+        result = await backend.agrep_raw("match", "/")
+        assert isinstance(result, list)
 
         assert len(result) == 1
         assert result[0]["path"] == "/home/daytona/file.py"
         assert result[0]["line"] == 5
         assert result[0]["text"] == "match line"
 
-    def test_grep_raw_with_dict_list_result(self, mock_sandbox):
-        """Test grep_raw when sandbox returns list of dicts."""
-        mock_sandbox.grep_content = Mock(return_value=[
-            {"path": "/home/daytona/file.py", "line": 10, "text": "match"}
-        ])
+    async def test_grep_raw_with_dict_list_result(self, mock_sandbox):
+        mock_sandbox.agrep_content = AsyncMock(return_value=[{"path": "/home/daytona/file.py", "line": 10, "text": "match"}])
 
         backend = DaytonaBackend(mock_sandbox)
-        result = backend.grep_raw("match", "/")
+        result = await backend.agrep_raw("match", "/")
+        assert isinstance(result, list)
 
         assert len(result) == 1
         assert result[0]["path"] == "/home/daytona/file.py"
         assert result[0]["line"] == 10
         assert result[0]["text"] == "match"
 
-    def test_grep_raw_with_empty_result(self, mock_sandbox):
-        """Test grep_raw when no matches found."""
-        mock_sandbox.grep_content = Mock(return_value=[])
+    async def test_grep_raw_with_empty_result(self, mock_sandbox):
+        mock_sandbox.agrep_content = AsyncMock(return_value=[])
 
         backend = DaytonaBackend(mock_sandbox)
-        result = backend.grep_raw("nomatch", "/")
+        result = await backend.agrep_raw("nomatch", "/")
+        assert isinstance(result, list)
 
         assert result == []
 
-    def test_grep_raw_with_invalid_line_number(self, mock_sandbox):
-        """Test grep_raw handles invalid line numbers gracefully."""
-        mock_sandbox.grep_content = Mock(return_value=[
-            "/home/daytona/file.py:notanumber:some text"
-        ])
+    async def test_grep_raw_with_invalid_line_number(self, mock_sandbox):
+        mock_sandbox.agrep_content = AsyncMock(return_value=["/home/daytona/file.py:notanumber:some text"])
 
         backend = DaytonaBackend(mock_sandbox)
-        result = backend.grep_raw("text", "/")
+        result = await backend.agrep_raw("text", "/")
+        assert isinstance(result, list)
 
-        # Should handle ValueError and set line to 0
         assert len(result) == 1
         assert result[0]["path"] == "/home/daytona/file.py"
         assert result[0]["line"] == 0
         assert result[0]["text"] == "notanumber:some text"
 
-    def test_grep_raw_with_colons_in_content(self, mock_sandbox):
-        """Test grep_raw handles content with colons correctly."""
-        mock_sandbox.grep_content = Mock(return_value=[
-            "/home/daytona/file.py:15:url = 'http://example.com:8080'"
-        ])
+    async def test_grep_raw_with_colons_in_content(self, mock_sandbox):
+        mock_sandbox.agrep_content = AsyncMock(return_value=["/home/daytona/file.py:15:url = 'http://example.com:8080'"])
 
         backend = DaytonaBackend(mock_sandbox)
-        result = backend.grep_raw("url", "/")
+        result = await backend.agrep_raw("url", "/")
+        assert isinstance(result, list)
 
         assert len(result) == 1
         assert result[0]["path"] == "/home/daytona/file.py"
         assert result[0]["line"] == 15
         assert result[0]["text"] == "url = 'http://example.com:8080'"
 
-    def test_grep_raw_with_empty_string_in_list(self, mock_sandbox):
-        """Test grep_raw handles empty strings in list."""
-        mock_sandbox.grep_content = Mock(return_value=[
-            "/home/daytona/file.py:10:match",
-            "",  # Empty string should be skipped
-            "/home/daytona/file2.py:20:another"
-        ])
+    async def test_grep_raw_with_empty_string_in_list(self, mock_sandbox):
+        mock_sandbox.agrep_content = AsyncMock(
+            return_value=[
+                "/home/daytona/file.py:10:match",
+                "",
+                "/home/daytona/file2.py:20:another",
+            ]
+        )
 
         backend = DaytonaBackend(mock_sandbox)
-        result = backend.grep_raw("match", "/")
+        result = await backend.agrep_raw("match", "/")
+        assert isinstance(result, list)
 
-        # Should skip empty strings
         assert len(result) == 2

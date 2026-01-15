@@ -393,7 +393,7 @@ async def execute_task(  # noqa: PLR0911  # pyright: ignore[reportGeneralTypeIss
         for path in mentioned_paths:
             try:
                 sandbox_path = sandbox.normalize_path(path)
-                content = sandbox.read_file(sandbox_path)
+                content = await sandbox.aread_file_text(sandbox_path)
                 if content is None:
                     console.print(f"[yellow]Warning: File not found in sandbox: {path}[/yellow]")
                     context_parts.append(f"\n### {path}\n[File not found: {path}]")
@@ -923,7 +923,7 @@ async def execute_task(  # noqa: PLR0911  # pyright: ignore[reportGeneralTypeIss
         async def _refresh_cache() -> None:
             try:
                 sandbox = await session.get_sandbox()
-                files = sandbox.glob_files("**/*", path=".")
+                files = await sandbox.aglob_files("**/*", path=".")
                 # Normalize paths (remove /home/daytona/ prefix)
                 home_prefix = "/home/daytona/"
                 normalized = [f.removeprefix(home_prefix) for f in files]

@@ -85,7 +85,7 @@ class TestSlashCommandsFilesIntegration:
         mock_sandbox = Mock()
 
         # Simulate typical agent workspace structure
-        mock_sandbox.glob_files = Mock(return_value=[
+        mock_sandbox.aglob_files = AsyncMock(return_value=[
             "/home/daytona/code/main.py",
             "/home/daytona/code/utils.py",
             "/home/daytona/data/input.csv",
@@ -119,7 +119,7 @@ class TestSlashCommandsFilesIntegration:
             )
 
         assert result == "handled"
-        mock_session_with_files.sandbox.glob_files.assert_called_once_with("**/*", path=".")
+        mock_session_with_files.sandbox.aglob_files.assert_awaited_once_with("**/*", path=".")
 
     @pytest.mark.asyncio
     async def test_files_command_filters_system_dirs(self, mock_session_with_files):
@@ -175,8 +175,8 @@ class TestSlashCommandsViewIntegration:
             "/home/daytona/code/main.py": "def hello():\n    print('world')",
             "/home/daytona/data/input.csv": "col1,col2\n1,2",
         }
-        mock_sandbox.read_file = Mock(side_effect=lambda p: file_contents.get(p))
-        mock_sandbox.download_file_bytes = Mock(return_value=b"fake image bytes")
+        mock_sandbox.aread_file_text = AsyncMock(side_effect=lambda p: file_contents.get(p))
+        mock_sandbox.adownload_file_bytes = AsyncMock(return_value=b"fake image bytes")
 
         mock_session = Mock()
         mock_session.sandbox = mock_sandbox
@@ -201,7 +201,7 @@ class TestSlashCommandsViewIntegration:
             )
 
         assert result == "handled"
-        mock_session_with_content.sandbox.read_file.assert_called()
+        mock_session_with_content.sandbox.aread_file_text.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_view_missing_file(self, mock_session_with_content):
@@ -241,8 +241,8 @@ class TestSlashCommandsViewIntegration:
                 "/view results/chart.png", agent, tracker, state, session=mock_session_with_content
             )
 
-        # download_file_bytes should be called for image files
-        mock_session_with_content.sandbox.download_file_bytes.assert_called()
+        # adownload_file_bytes should be called for image files
+        mock_session_with_content.sandbox.adownload_file_bytes.assert_awaited()
 
 
 class TestSlashCommandsDownloadIntegration:
@@ -253,8 +253,8 @@ class TestSlashCommandsDownloadIntegration:
         """Create a mock session with downloadable content."""
         mock_sandbox = Mock()
         mock_sandbox.normalize_path = Mock(side_effect=lambda p: f"/home/daytona/{p}")
-        mock_sandbox.read_file = Mock(return_value="This is downloadable content!")
-        mock_sandbox.download_file_bytes = Mock(return_value=b"binary content")
+        mock_sandbox.aread_file_text = AsyncMock(return_value="This is downloadable content!")
+        mock_sandbox.adownload_file_bytes = AsyncMock(return_value=b"binary content")
 
         mock_session = Mock()
         mock_session.sandbox = mock_sandbox
@@ -305,8 +305,8 @@ class TestSlashCommandsDownloadIntegration:
                 agent, tracker, state, session=mock_session_with_download
             )
 
-        # Binary files use download_file_bytes
-        mock_session_with_download.sandbox.download_file_bytes.assert_called()
+        # Binary files use adownload_file_bytes
+        mock_session_with_download.sandbox.adownload_file_bytes.assert_awaited()
 
 
 class TestSlashCommandsCopyIntegration:
@@ -317,7 +317,7 @@ class TestSlashCommandsCopyIntegration:
         """Create a mock session with copyable content."""
         mock_sandbox = Mock()
         mock_sandbox.normalize_path = Mock(side_effect=lambda p: f"/home/daytona/{p}")
-        mock_sandbox.read_file = Mock(return_value="Content to copy to clipboard")
+        mock_sandbox.aread_file_text = AsyncMock(return_value="Content to copy to clipboard")
 
         mock_session = Mock()
         mock_session.sandbox = mock_sandbox
@@ -352,8 +352,8 @@ class TestSlashCommandsCopyIntegration:
         from ptc_cli.core.state import SessionState
         from ptc_cli.display.tokens import TokenTracker
 
-        # Override read_file to return None for this test
-        mock_session_with_copy.sandbox.read_file = Mock(return_value=None)
+        # Override aread_file_text to return None for this test
+        mock_session_with_copy.sandbox.aread_file_text = AsyncMock(return_value=None)
 
         state = SessionState()
         tracker = Mock(spec=TokenTracker)

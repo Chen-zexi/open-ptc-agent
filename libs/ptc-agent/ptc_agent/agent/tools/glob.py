@@ -1,7 +1,5 @@
 """Glob tool for file pattern matching."""
 
-import asyncio
-import inspect
 from typing import Any
 
 import structlog
@@ -46,16 +44,7 @@ def create_glob_tool(sandbox: Any) -> BaseTool:
                 logger.error(error_msg, path=search_path)
                 return f"ERROR: {error_msg}"
 
-            # Search for files matching the pattern using normalized path
-            method = getattr(sandbox, "glob_files_async", None)
-            if callable(method):
-                maybe = method(pattern, normalized_path)
-                if inspect.isawaitable(maybe):
-                    matches = await maybe
-                else:
-                    matches = await asyncio.to_thread(sandbox.glob_files, pattern, normalized_path)
-            else:
-                matches = await asyncio.to_thread(sandbox.glob_files, pattern, normalized_path)
+            matches = await sandbox.aglob_files(pattern, normalized_path)
 
             if not matches:
                 logger.info("No files found", pattern=pattern, path=search_path)

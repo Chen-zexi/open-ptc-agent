@@ -5,7 +5,7 @@ before the agent can proceed with execution. It enables a two-phase
 workflow: explore/plan, then execute after approval.
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain.agents.middleware import InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
@@ -81,7 +81,7 @@ class PlanModeMiddleware(AgentMiddleware):
 def format_plan_description(
     tool_call: ToolCall,
     state: AgentState,
-    runtime: Runtime,
+    runtime: Runtime[Any],
 ) -> str:
     """Format the submit_plan tool call for the approval prompt.
 

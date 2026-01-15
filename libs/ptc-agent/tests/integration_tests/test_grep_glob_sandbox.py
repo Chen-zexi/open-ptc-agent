@@ -29,6 +29,8 @@ from ptc_agent.core.session import SessionManager
 def _load_module_from_path(module_name: str, file_path: str):
     """Load a module directly from file path to bypass package import chain."""
     spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module spec for {module_name} from {file_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -102,8 +104,7 @@ async def sandbox_with_files(sandbox_session):
             dir_path = "/".join(filepath.split("/")[:-1])
             await sandbox.execute_bash_command(f"mkdir -p {dir_path}")
 
-        # Write file (synchronous method)
-        sandbox.write_file(filepath, content)
+        await sandbox.awrite_file_text(filepath, content)
 
     return sandbox
 
@@ -172,12 +173,12 @@ class TestGlobTool:
 class TestGlobDirectMethods:
     """Test direct sandbox glob methods."""
 
-    def test_direct_glob_files(self, sandbox_with_files):
-        """Test direct sandbox.glob_files() method."""
-        result = sandbox_with_files.glob_files("*.py", ".")
+    @pytest.mark.asyncio
+    async def test_direct_glob_files(self, sandbox_with_files):
+        result = await sandbox_with_files.aglob_files("*.py", ".")
 
         assert isinstance(result, list)
-        assert len(result) >= 2  # At least test_file1.py and test_file2.py
+        assert len(result) >= 2
 
 
 # =============================================================================
@@ -273,9 +274,9 @@ class TestGrepTool:
 class TestGrepDirectMethods:
     """Test direct sandbox grep methods."""
 
-    def test_direct_grep_content(self, sandbox_with_files):
-        """Test direct sandbox.grep_content() method."""
-        result = sandbox_with_files.grep_content(
+    @pytest.mark.asyncio
+    async def test_direct_grep_content(self, sandbox_with_files):
+        result = await sandbox_with_files.agrep_content(
             pattern="SEARCH_TARGET_ALPHA",
             path=".",
             output_mode="files_with_matches",
@@ -293,28 +294,26 @@ class TestGrepDirectMethods:
 class TestSandboxDiagnostics:
     """Diagnostic tests to verify sandbox functionality."""
 
-    def test_list_directory(self, sandbox_with_files):
-        """Test sandbox can list directory contents."""
-        contents = sandbox_with_files.list_directory(".")
+    @pytest.mark.asyncio
+    async def test_list_directory(self, sandbox_with_files):
+        contents = await sandbox_with_files.als_directory(".")
 
         assert isinstance(contents, list)
         assert len(contents) > 0
 
-    def test_search_files(self, sandbox_with_files):
-        """Test sandbox search_files method."""
-        files = sandbox_with_files.search_files("*.py", ".")
-
+    @pytest.mark.asyncio
+    async def test_glob_files(self, sandbox_with_files):
+        files = await sandbox_with_files.aglob_files("*.py", ".")
         assert isinstance(files, list)
 
-    def test_read_file(self, sandbox_with_files):
-        """Test sandbox can read file contents."""
-        content = sandbox_with_files.read_file("test_file1.py")
+    @pytest.mark.asyncio
+    async def test_read_file(self, sandbox_with_files):
+        content = await sandbox_with_files.aread_file_text("test_file1.py")
 
         assert content is not None
         assert "hello" in content.lower()
 
     def test_validate_path(self, sandbox_with_files):
-        """Test path validation works correctly."""
         assert sandbox_with_files.validate_path(".") is True
         assert sandbox_with_files.validate_path("test_file1.py") is True
 

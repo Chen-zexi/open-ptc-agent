@@ -20,7 +20,7 @@ async def test_sync_skills_skips_when_no_local_files(sandbox_instance: PTCSandbo
     async def _read(_path):
         return None
 
-    monkeypatch.setattr(sandbox_instance, "read_file_text_async", _read)
+    monkeypatch.setattr(sandbox_instance, "aread_file_text", _read)
 
     did_upload = await sandbox_instance.sync_skills(
         [("/tmp/user", "/home/daytona/skills"), ("/tmp/project", "/home/daytona/skills")],
@@ -40,7 +40,7 @@ async def test_sync_skills_uploads_when_remote_missing(sandbox_instance: PTCSand
     async def _read(_path):
         return None
 
-    monkeypatch.setattr(sandbox_instance, "read_file_text_async", _read)
+    monkeypatch.setattr(sandbox_instance, "aread_file_text", _read)
 
     calls: list[str] = []
 
@@ -71,7 +71,7 @@ async def test_sync_skills_skips_when_versions_match_and_reusing(sandbox_instanc
     async def _read(_path):
         return json.dumps({"version": "v1"})
 
-    monkeypatch.setattr(sandbox_instance, "read_file_text_async", _read)
+    monkeypatch.setattr(sandbox_instance, "aread_file_text", _read)
 
     uploaded = False
 
@@ -99,7 +99,7 @@ async def test_sync_skills_uploads_when_versions_match_but_new_sandbox(sandbox_i
     async def _read(_path):
         return json.dumps({"version": "v1"})
 
-    monkeypatch.setattr(sandbox_instance, "read_file_text_async", _read)
+    monkeypatch.setattr(sandbox_instance, "aread_file_text", _read)
 
     calls: list[str] = []
 

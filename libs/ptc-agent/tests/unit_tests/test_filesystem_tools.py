@@ -1,6 +1,6 @@
 """Tests for filesystem tools."""
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -16,7 +16,7 @@ class TestReadFileTool:
     async def test_read_file_success(self, mock_sandbox):
         """Test successful file read."""
         mock_sandbox.validate_path = Mock(return_value=True)
-        mock_sandbox.read_file = Mock(return_value="Hello, world!")
+        mock_sandbox.aread_file_text = AsyncMock(return_value="Hello, world!")
 
         read_file, _, _ = create_filesystem_tools(mock_sandbox)
         result = await read_file.ainvoke({"file_path": "test.txt"})
@@ -29,7 +29,7 @@ class TestReadFileTool:
     async def test_read_file_not_found(self, mock_sandbox):
         """Test reading non-existent file."""
         mock_sandbox.validate_path = Mock(return_value=True)
-        mock_sandbox.read_file = Mock(return_value=None)
+        mock_sandbox.aread_file_text = AsyncMock(return_value=None)
 
         read_file, _, _ = create_filesystem_tools(mock_sandbox)
         result = await read_file.ainvoke({"file_path": "missing.txt"})
@@ -56,7 +56,7 @@ class TestWriteFileTool:
     async def test_write_file_success(self, mock_sandbox):
         """Test successful file write."""
         mock_sandbox.validate_path = Mock(return_value=True)
-        mock_sandbox.write_file = Mock(return_value=True)
+        mock_sandbox.awrite_file_text = AsyncMock(return_value=True)
         mock_sandbox.virtualize_path = Mock(return_value="output.txt")
 
         _, write_file, _ = create_filesystem_tools(mock_sandbox)
@@ -73,7 +73,7 @@ class TestWriteFileTool:
     async def test_write_file_failure(self, mock_sandbox):
         """Test failed file write."""
         mock_sandbox.validate_path = Mock(return_value=True)
-        mock_sandbox.write_file = Mock(return_value=False)
+        mock_sandbox.awrite_file_text = AsyncMock(return_value=False)
 
         _, write_file, _ = create_filesystem_tools(mock_sandbox)
         result = await write_file.ainvoke({
@@ -105,11 +105,13 @@ class TestEditFileTool:
     async def test_edit_file_success(self, mock_sandbox):
         """Test successful file edit."""
         mock_sandbox.validate_path = Mock(return_value=True)
-        mock_sandbox.edit_file = Mock(return_value={
-            "success": True,
-            "changed": True,
-            "message": "Successfully edited test.txt"
-        })
+        mock_sandbox.aedit_file_text = AsyncMock(
+            return_value={
+                "success": True,
+                "changed": True,
+                "message": "Successfully edited test.txt",
+            }
+        )
 
         _, _, edit_file = create_filesystem_tools(mock_sandbox)
         result = await edit_file.ainvoke({

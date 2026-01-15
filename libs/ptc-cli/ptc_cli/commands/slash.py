@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import sys
 import termios
 import tty
@@ -28,10 +27,10 @@ if TYPE_CHECKING:
     class _Sandbox(Protocol):
         """Protocol for Sandbox type hint."""
 
-        def glob_files(self, pattern: str, path: str) -> list[str]: ...
+        async def aglob_files(self, pattern: str, path: str) -> list[str]: ...
         def normalize_path(self, path: str) -> str: ...
-        def read_file(self, path: str) -> str | None: ...
-        def download_file_bytes(self, path: str) -> bytes | None: ...
+        async def aread_file_text(self, path: str) -> str | None: ...
+        async def adownload_file_bytes(self, path: str) -> bytes | None: ...
         async def execute_bash_command(
             self, command: str, working_dir: str = ..., timeout: int = ..., *, background: bool = ...,  # noqa: ASYNC109
         ) -> dict[str, Any]: ...
@@ -156,7 +155,7 @@ async def _handle_files_command(session: _SessionManager | None, *, show_all: bo
 
     async def _list_files() -> list[str]:
         sandbox = await session.get_sandbox()
-        return sandbox.glob_files("**/*", path=".")  # type: ignore[union-attr]
+        return await sandbox.aglob_files("**/*", path=".")  # type: ignore[union-attr]
 
     try:
         files = await _execute_with_recovery(session, "listing files", _list_files)
@@ -214,12 +213,7 @@ async def _handle_view_command(session: _SessionManager | None, path: str) -> No
             sandbox = await session.get_sandbox()
             sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
 
-            async_method = getattr(sandbox, "download_file_bytes_async", None)
-            if callable(async_method):
-                maybe = async_method(sandbox_path)
-                if inspect.isawaitable(maybe):
-                    return await maybe
-            return sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
+            return await sandbox.adownload_file_bytes(sandbox_path)  # type: ignore[union-attr]
 
         try:
             image_bytes = await _execute_with_recovery(session, "downloading image", _download_image)
@@ -256,13 +250,7 @@ async def _handle_view_command(session: _SessionManager | None, path: str) -> No
     async def _read_file() -> str | None:
         sandbox = await session.get_sandbox()
         sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
-
-        async_method = getattr(sandbox, "read_file_text_async", None)
-        if callable(async_method):
-            maybe = async_method(sandbox_path)
-            if inspect.isawaitable(maybe):
-                return await maybe
-        return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+        return await sandbox.aread_file_text(sandbox_path)  # type: ignore[union-attr]
 
     try:
         content = await _execute_with_recovery(session, "reading file", _read_file)
@@ -300,13 +288,7 @@ async def _handle_copy_command(session: _SessionManager | None, path: str) -> No
     async def _read_file() -> str | None:
         sandbox = await session.get_sandbox()
         sandbox_path = sandbox.normalize_path(path)  # type: ignore[union-attr]
-
-        async_method = getattr(sandbox, "read_file_text_async", None)
-        if callable(async_method):
-            maybe = async_method(sandbox_path)
-            if inspect.isawaitable(maybe):
-                return await maybe
-        return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
+        return await sandbox.aread_file_text(sandbox_path)  # type: ignore[union-attr]
 
     try:
         content = await _execute_with_recovery(session, "reading file", _read_file)
@@ -599,12 +581,7 @@ async def _handle_download_command(
                 sandbox = await session.get_sandbox()
                 sandbox_path = sandbox.normalize_path(user_path)  # type: ignore[union-attr]
 
-                async_method = getattr(sandbox, "download_file_bytes_async", None)
-                if callable(async_method):
-                    maybe = async_method(sandbox_path)
-                    if inspect.isawaitable(maybe):
-                        return await maybe
-                return sandbox.download_file_bytes(sandbox_path)  # type: ignore[union-attr]
+                return await sandbox.adownload_file_bytes(sandbox_path)  # type: ignore[union-attr]
 
             binary_content = await _execute_with_recovery(session, "downloading file", _download_binary)
             if binary_content:
@@ -617,13 +594,8 @@ async def _handle_download_command(
             async def _download_text() -> str | None:
                 sandbox = await session.get_sandbox()
                 sandbox_path = sandbox.normalize_path(user_path)  # type: ignore[union-attr]
+                return await sandbox.aread_file_text(sandbox_path)  # type: ignore[union-attr]
 
-                async_method = getattr(sandbox, "read_file_text_async", None)
-                if callable(async_method):
-                    maybe = async_method(sandbox_path)
-                    if inspect.isawaitable(maybe):
-                        return await maybe
-                return sandbox.read_file(sandbox_path)  # type: ignore[union-attr]
 
             text_content = await _execute_with_recovery(session, "downloading file", _download_text)
             if text_content:

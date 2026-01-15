@@ -252,7 +252,7 @@ class TestSandboxDirectoryStructure:
         work_dir = getattr(sandbox, "_work_dir", "/home/daytona")
 
         try:
-            contents = sandbox.list_directory(work_dir)
+            contents = await sandbox.als_directory(work_dir)
             assert isinstance(contents, list)
         except Exception as e:
             pytest.skip(f"Could not list directory: {e}")
@@ -264,7 +264,7 @@ class TestSandboxDirectoryStructure:
         tools_dir = f"{work_dir}/tools"
 
         try:
-            contents = sandbox.list_directory(tools_dir)
+            contents = await sandbox.als_directory(tools_dir)
             assert isinstance(contents, list)
         except Exception as e:
             # tools directory may not exist if no MCP servers configured
@@ -287,7 +287,7 @@ class TestGeneratedToolModules:
         mcp_client_path = f"{work_dir}/tools/mcp_client.py"
 
         try:
-            content = sandbox.read_file(mcp_client_path)
+            content = await sandbox.aread_file_text(mcp_client_path)
             # Content may be empty string if file exists but is empty,
             # or None if file doesn't exist
             if content:
@@ -305,7 +305,7 @@ class TestGeneratedToolModules:
         for server_name in tools_by_server:
             module_path = f"{work_dir}/tools/{server_name}.py"
             try:
-                content = sandbox.read_file(module_path)
+                content = await sandbox.aread_file_text(module_path)
                 if content:
                     assert len(content) > 0, f"Module for {server_name} is empty"
             except Exception as e:
@@ -429,7 +429,7 @@ class TestToolDocumentation:
         docs_dir = f"{work_dir}/tools/docs"
 
         try:
-            contents = sandbox.list_directory(docs_dir)
+            contents = await sandbox.als_directory(docs_dir)
             assert isinstance(contents, list)
         except Exception as e:
             # docs directory may not exist

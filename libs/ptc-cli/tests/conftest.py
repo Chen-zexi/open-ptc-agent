@@ -137,15 +137,15 @@ def mock_sandbox():
     sandbox.sandbox_id = "test-sandbox-123"
     sandbox.is_healthy = AsyncMock(return_value=True)
     sandbox.execute = AsyncMock(return_value={"stdout": "", "stderr": "", "exit_code": 0})
-    sandbox.glob_files = Mock(return_value=[])
+    sandbox.aglob_files = AsyncMock(return_value=[])
     sandbox.normalize_path = Mock(side_effect=lambda x: f"/home/daytona/{x}")
     sandbox.read_file = Mock(return_value=None)
     sandbox.download_file_bytes = Mock(return_value=None)
 
-    # New async helpers are used by slash commands and agent tools.
+    # Async helpers used by slash commands and agent tools.
     # Wire them to existing sync mocks so tests can keep setting return_value.
-    sandbox.read_file_text_async = AsyncMock(side_effect=lambda p: sandbox.read_file(p))
-    sandbox.download_file_bytes_async = AsyncMock(side_effect=lambda p: sandbox.download_file_bytes(p))
+    sandbox.aread_file_text = AsyncMock(side_effect=lambda p: sandbox.read_file(p))
+    sandbox.adownload_file_bytes = AsyncMock(side_effect=lambda p: sandbox.download_file_bytes(p))
 
     return sandbox
 

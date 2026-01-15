@@ -1,7 +1,7 @@
 """File operation tools: read, write, edit."""
 
-import asyncio
-import inspect
+from __future__ import annotations
+
 from typing import Any
 
 import structlog
@@ -11,86 +11,47 @@ logger = structlog.get_logger(__name__)
 
 
 def create_filesystem_tools(sandbox: Any) -> tuple:
-    """Factory function to create all filesystem tools (Read, Write, Edit).
+    """Factory function to create filesystem tools (Read, Write, Edit)."""
 
-    Args:
-        sandbox: PTCSandbox instance
-
-    Returns:
-        Tuple of (read_file, write_file, edit_file) tools
-    """
+    def _format_cat_n(lines: list[str], *, start_line_number: int) -> str:
+        return "\n".join(f"{i:6}\t{line}" for i, line in enumerate(lines, start=start_line_number))
 
     @tool
     async def read_file(file_path: str, offset: int | None = None, limit: int | None = None) -> str:
         """Read a file with line numbers (cat -n format).
 
         Args:
-            file_path: Path to file (relative or absolute)
-            offset: Start line, 1-indexed (optional)
-            limit: Number of lines (optional)
+            file_path: Path to file (relative or absolute).
+            offset: Line offset (0-indexed). Default: 0.
+            limit: Maximum number of lines. Default: 2000.
 
         Returns:
-            File contents with line numbers, or ERROR
+            File contents with line numbers, or ERROR.
         """
         try:
-            # Normalize virtual path to absolute sandbox path
             normalized_path = sandbox.normalize_path(file_path)
             logger.info("Reading file", file_path=file_path, normalized_path=normalized_path, offset=offset, limit=limit)
 
-            # Validate normalized path
             if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(normalized_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
-            # Read file content with optional offset/limit using normalized path
+            start_offset = offset or 0
+            max_lines = limit or 2000
+
             if offset is not None or limit is not None:
-                method = getattr(sandbox, "read_file_range_async", None)
-                if callable(method):
-                    maybe = method(normalized_path, offset or 1, limit or 2000)
-                    if inspect.isawaitable(maybe):
-                        content = await maybe
-                    else:
-                        content = await asyncio.to_thread(sandbox.read_file_range, normalized_path, offset or 1, limit or 2000)
-                else:
-                    content = await asyncio.to_thread(sandbox.read_file_range, normalized_path, offset or 1, limit or 2000)
+                content = await sandbox.aread_file_range(normalized_path, start_offset, max_lines)
             else:
-                method = getattr(sandbox, "read_file_text_async", None)
-                if callable(method):
-                    maybe = method(normalized_path)
-                    if inspect.isawaitable(maybe):
-                        content = await maybe
-                    else:
-                        content = await asyncio.to_thread(sandbox.read_file, normalized_path)
-                else:
-                    content = await asyncio.to_thread(sandbox.read_file, normalized_path)
+                content = await sandbox.aread_file_text(normalized_path)
 
             if content is None:
                 error_msg = f"File not found: {file_path}"
                 logger.warning(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
-            # Format with line numbers in cat -n format
             lines = content.splitlines()
-            start_line = offset or 1
-            formatted_lines = []
-
-            for i, line in enumerate(lines):
-                line_num = start_line + i
-                # Format: "     1→content" (right-aligned line number with arrow)
-                formatted_line = f"{line_num:>6}→{line}"
-                formatted_lines.append(formatted_line)
-
-            result = "\n".join(formatted_lines)
-
-            logger.info(
-                "File read successfully",
-                file_path=file_path,
-                size=len(content),
-                lines=len(lines),
-            )
-
-            return result
+            return _format_cat_n(lines, start_line_number=start_offset + 1)
 
         except Exception as e:
             error_msg = f"Failed to read file: {e!s}"
@@ -99,52 +60,23 @@ def create_filesystem_tools(sandbox: Any) -> tuple:
 
     @tool
     async def write_file(file_path: str, content: str) -> str:
-        """Write content to a file. Overwrites existing.
-
-        Use Read tool first for existing files. Prefer Edit over Write.
-
-        Args:
-            file_path: Path to file
-            content: Content to write
-
-        Returns:
-            Confirmation or ERROR
-        """
+        """Write content to a file. Overwrites existing."""
         try:
-            # Normalize virtual path to absolute sandbox path
             normalized_path = sandbox.normalize_path(file_path)
             logger.info("Writing file", file_path=file_path, normalized_path=normalized_path, size=len(content))
 
-            # Validate normalized path
             if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(normalized_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
-            # Write file using normalized path
-            method = getattr(sandbox, "write_file_text_async", None)
-            if callable(method):
-                maybe = method(normalized_path, content)
-                if inspect.isawaitable(maybe):
-                    success = await maybe
-                else:
-                    success = await asyncio.to_thread(sandbox.write_file, normalized_path, content)
-            else:
-                success = await asyncio.to_thread(sandbox.write_file, normalized_path, content)
+            success = await sandbox.awrite_file_text(normalized_path, content)
+            if not success:
+                return "ERROR: Write operation failed"
 
-            if success:
-                bytes_written = len(content.encode("utf-8"))
-                # Return virtual path in success message
-                virtual_path = sandbox.virtualize_path(normalized_path)
-                logger.info(
-                    "File written successfully",
-                    file_path=virtual_path,
-                    bytes_written=bytes_written,
-                )
-                return f"Wrote {bytes_written} bytes to {virtual_path}"
-            error_msg = "Write operation failed"
-            logger.error(error_msg, file_path=file_path)
-            return f"ERROR: {error_msg}"
+            bytes_written = len(content.encode("utf-8"))
+            virtual_path = sandbox.virtualize_path(normalized_path)
+            return f"Wrote {bytes_written} bytes to {virtual_path}"
 
         except Exception as e:
             error_msg = f"Failed to write file: {e!s}"
@@ -152,24 +84,9 @@ def create_filesystem_tools(sandbox: Any) -> tuple:
             return f"ERROR: {error_msg}"
 
     @tool
-    async def edit_file(
-        file_path: str, old_string: str, new_string: str, replace_all: bool = False
-    ) -> str:
-        """Replace exact string in a file. Must Read file first.
-
-        Args:
-            file_path: Path to file
-            old_string: Text to find (must be unique unless replace_all)
-            new_string: Replacement text
-            replace_all: Replace all occurrences (default: False)
-
-        Returns:
-            Confirmation or ERROR
-
-        Note: Preserve exact indentation from Read output. Exclude line number prefix.
-        """
+    async def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+        """Replace exact string in a file. Must Read file first."""
         try:
-            # Normalize virtual path to absolute sandbox path
             normalized_path = sandbox.normalize_path(file_path)
             logger.info(
                 "Editing file",
@@ -179,32 +96,17 @@ def create_filesystem_tools(sandbox: Any) -> tuple:
                 replace_all=replace_all,
             )
 
-            # Validate normalized path
             if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(normalized_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
-            # Edit file using normalized path
-            method = getattr(sandbox, "edit_file_text_async", None)
-            if callable(method):
-                maybe = method(normalized_path, old_string, new_string, replace_all=replace_all)
-                if inspect.isawaitable(maybe):
-                    result = await maybe
-                else:
-                    result = await asyncio.to_thread(sandbox.edit_file, normalized_path, old_string, new_string, replace_all)
-            else:
-                result = await asyncio.to_thread(sandbox.edit_file, normalized_path, old_string, new_string, replace_all)
-
+            result = await sandbox.aedit_file_text(normalized_path, old_string, new_string, replace_all=replace_all)
             if not result.get("success", False):
                 error_msg = result.get("error", "Edit operation failed")
-                logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
-            # Return success message
-            message = result.get("message", "File edited successfully")
-            logger.info("File edited successfully", file_path=file_path)
-            return message
+            return str(result.get("message", "File edited successfully"))
 
         except Exception as e:
             error_msg = f"Failed to edit file: {e!s}"

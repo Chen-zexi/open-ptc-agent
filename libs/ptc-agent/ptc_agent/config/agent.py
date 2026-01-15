@@ -45,13 +45,21 @@ class SkillsConfig(BaseModel):
     def local_skill_dirs_with_sandbox(self, *, cwd: Path | None = None) -> list[tuple[str, str]]:
         """Return ordered (local_dir, sandbox_dir) sources.
 
-        Project skills are listed last so they override user skills.
+        Precedence is last-wins (later sources override earlier ones). We support
+        both a legacy `skills/` project directory and the current `.ptc-agent/skills`
+        default.
         """
         base = cwd or Path.cwd()
-        return [
-            (str(Path(self.user_skills_dir).expanduser()), self.sandbox_skills_base),
-            (str((base / self.project_skills_dir).resolve()), self.sandbox_skills_base),
-        ]
+
+        user_dir = str(Path(self.user_skills_dir).expanduser())
+        project_dir = str((base / self.project_skills_dir).resolve())
+        legacy_project_dir = str((base / "skills").resolve())
+
+        sources: list[tuple[str, str]] = [(user_dir, self.sandbox_skills_base)]
+        if legacy_project_dir != project_dir:
+            sources.append((legacy_project_dir, self.sandbox_skills_base))
+        sources.append((project_dir, self.sandbox_skills_base))
+        return sources
 
 
 class LLMDefinition(BaseModel):
