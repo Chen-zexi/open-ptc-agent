@@ -1,3 +1,7 @@
 # .gitattributes
 
 *.ipynb linguist-vendored
+
+# Prompt snapshot baselines must stay LF so snapshot tests compare deterministically
+# across Windows (CRLF checkout) and CI (LF checkout).
+libs/ptc-agent/tests/unit_tests/snapshots/** text eol=lf
