@@ -249,6 +249,7 @@ def create_filesystem_config(data: dict[str, Any]) -> FilesystemConfig:
 
     validate_section_fields(data, FILESYSTEM_REQUIRED_FIELDS, "filesystem")
     return FilesystemConfig(
+        working_directory=data.get("working_directory", "/home/daytona"),
         allowed_directories=data["allowed_directories"],
         enable_path_validation=data.get("enable_path_validation", True),
     )

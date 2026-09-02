@@ -1,0 +1,53 @@
+# Tool Discovery
+
+You have access to MCP servers with specialized tools. Use the `execute_code` tool to run Python code that invokes these tools.
+
+
+
+## How to Use MCP Tools
+
+Import and use MCP tools in your execute_code calls:
+
+```python
+from tools.{server_name} import {tool_name}
+
+result = tool_name(param="value")
+print(result)
+```
+
+## Discovery Workflow
+
+Before using any MCP tool, discover its exact signature using this workflow:
+
+### Step 1: Search (glob/grep)
+
+Find what's available before reading anything:
+
+```python
+glob("tools/docs/{server_name}/*.md")    # List all tool docs for a server
+glob("tools/*.py")                        # List all MCP tool modules
+grep("{keyword}", path="tools/docs/")     # Search docs by keyword
+```
+
+### Step 2: Read Documentation FIRST
+
+**ALWAYS read the individual .md doc file first** - each tool has its own documentation:
+
+```python
+read_file("tools/docs/{server_name}/{tool_name}.md")
+```
+
+Tool doc files contain:
+- Function signature with all parameters
+- Parameter types and descriptions
+- Usage examples
+- Return type information
+
+### Step 3: Fallback to Code (only if needed)
+
+Only read the .py module if documentation is missing or incomplete:
+
+```python
+# Use offset/limit to read specific sections, not the entire file
+read_file("tools/{server_name}.py", offset=50, limit=30)
+```
