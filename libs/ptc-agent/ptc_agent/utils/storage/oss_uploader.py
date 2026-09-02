@@ -131,7 +131,7 @@ def upload_file(key: str, file_path: str) -> bool:
         logger.debug(f"Uploaded {path_obj} to OSS as {key}, status: {result.status_code}")
         return True
 
-    except oss_exceptions.OssError:
+    except oss_exceptions.ServiceError:
         logger.exception(f"OSS upload failed for {key}")
         return False
     except Exception:
@@ -204,7 +204,7 @@ def upload_bytes(key: str, data: bytes) -> bool:
         logger.debug(f"Uploaded bytes to OSS as {key}, status: {result.status_code}")
         return True
 
-    except oss_exceptions.OssError:
+    except oss_exceptions.ServiceError:
         logger.exception(f"OSS upload failed for {key}")
         return False
     except Exception:
@@ -233,7 +233,7 @@ def does_object_exist(key: str) -> bool:
         ))
         return True
 
-    except oss_exceptions.OssError as e:
+    except oss_exceptions.ServiceError as e:
         if hasattr(e, "status_code") and e.status_code == 404:
             return False
         logger.error(f"Error checking object existence for {key}: {e}")
@@ -267,7 +267,7 @@ def delete_object(key: str) -> bool:
         logger.debug(f"Deleted {key} from OSS, status: {result.status_code}")
         return True
 
-    except oss_exceptions.OssError as e:
+    except oss_exceptions.ServiceError as e:
         logger.error(f"OSS deletion failed for {key}: {e}")
         return False
     except Exception as e:
@@ -318,7 +318,7 @@ def get_signed_url(key: str, expires_in: int = 3600) -> str | None:
 
         return result.url
 
-    except oss_exceptions.OssError as e:
+    except oss_exceptions.ServiceError as e:
         logger.error(f"Failed to generate signed URL for {key}: {e}")
         return None
     except Exception as e:
@@ -418,7 +418,7 @@ def verify_connection() -> bool:
         logger.info(f"Successfully connected to OSS bucket: {OSSConfig.BUCKET_NAME}")
         return True
 
-    except oss_exceptions.OssError as e:
+    except oss_exceptions.ServiceError as e:
         logger.error(f"OSS connection verification failed: {e}")
         return False
     except Exception as e:
