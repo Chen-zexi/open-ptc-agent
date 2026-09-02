@@ -73,7 +73,7 @@ jobs:
         run: uv sync
 
       - name: Run ptc-agent unit tests
-        run: uv run pytest libs/ptc-agent/tests/unit_tests/ -v
+        run: uv run --with pytest-cov pytest libs/ptc-agent/tests/unit_tests/ -v --cov=ptc_agent --cov-report=term-missing --cov-fail-under=30
 
       - name: Run ptc-cli unit tests
         run: uv run pytest libs/ptc-cli/tests/unit_tests/ -v
